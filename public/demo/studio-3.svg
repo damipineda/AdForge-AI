@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 800" role="img" aria-label="Fondo de estudio 3: atardecer andino">
+  <defs>
+    <linearGradient id="sunset" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1a3029"/>
+      <stop offset="45%" stop-color="#a66a00"/>
+      <stop offset="80%" stop-color="#f3b34a"/>
+      <stop offset="100%" stop-color="#0d1f19"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" x2="1">
+      <stop offset="0%" stop-color="#f7f8f4"/>
+      <stop offset="100%" stop-color="#8e9a96"/>
+    </linearGradient>
+  </defs>
+  <rect width="600" height="800" fill="url(#sunset)"/>
+  <path d="M0 620 Q150 540 300 620 T600 620 L600 800 L0 800 Z" fill="#0d1f19" opacity="0.85"/>
+  <g transform="translate(300,430)">
+    <rect x="-70" y="-260" width="140" height="55" rx="12" fill="#2a2f2e"/>
+    <rect x="-85" y="-205" width="170" height="410" rx="26" fill="url(#body)"/>
+  </g>
+  <text x="300" y="760" text-anchor="middle" font-family="ui-monospace, monospace" font-size="20" fill="#f7f8f4">Muse Image · studio-3 (demo)</text>
+</svg>

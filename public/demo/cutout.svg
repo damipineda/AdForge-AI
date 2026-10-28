@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 800" role="img" aria-label="Recorte SAM 3.1 del producto">
+  <defs>
+    <linearGradient id="body" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#c9d0cf"/>
+      <stop offset="50%" stop-color="#8e9a96"/>
+      <stop offset="100%" stop-color="#4c5855"/>
+    </linearGradient>
+  </defs>
+  <rect width="600" height="800" fill="none"/>
+  <g transform="translate(300,420)">
+    <rect x="-70" y="-300" width="140" height="60" rx="12" fill="#2a2f2e"/>
+    <rect x="-85" y="-240" width="170" height="440" rx="26" fill="url(#body)"/>
+    <rect x="-85" y="-240" width="170" height="30" rx="12" fill="#1a3029"/>
+    <rect x="-85" y="180" width="170" height="30" rx="12" fill="#1a3029"/>
+    <ellipse cx="0" cy="-250" rx="70" ry="12" fill="#3a4441"/>
+  </g>
+  <text x="300" y="780" text-anchor="middle" font-family="ui-monospace, monospace" font-size="20" fill="#4fe3a1">SAM 3.1 · cutout (demo)</text>
+</svg>

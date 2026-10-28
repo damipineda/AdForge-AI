@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #071310;
+  --foreground: #eaece6;
 }
 
 @theme inline {
@@ -10,17 +10,170 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-bricolage);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* Paleta nocturna AdForge — heredada de la agenda nocturna de ReservaPy,
+   extendida con jerarquía de texto legible sobre `night`. */
+@theme {
+  --color-night: #071310;
+  --color-night-panel: #0d1f19;
+  --color-night-panel-elevated: #123028;
+  --color-night-rule: #1a3029;
+  --color-night-rule-strong: #24493e;
+
+  --color-mint: #4fe3a1;
+  --color-mint-dark: #17b57a;
+  --color-mint-soft: #4fe3a120;
+
+  --color-paper: #f7f8f4;
+  --color-paper-dim: #b9c7c0;
+  --color-paper-muted: #6e8079;
+
+  --color-ink: #0e1c17;
+  --color-ink-soft: #46564e;
+
+  --color-brand: #0f6b4f;
+  --color-brand-dark: #0a4f39;
+
+  --color-signal: #f3b34a;
+  --color-signal-dark: #a66a00;
+  --color-danger: #ef6b5c;
+  --color-danger-dark: #a3271f;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    color-scheme: dark;
+  }
+
+  body {
+    background: var(--color-night);
+    color: var(--color-paper);
+    font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-mint);
+    outline-offset: 2px;
+    border-radius: 4px;
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* Glow radial que respira detrás del panel de resultados. */
+@utility night-glow {
+  background-image:
+    radial-gradient(
+      60rem 28rem at 50% 0%,
+      color-mix(in oklab, var(--color-mint) 11%, transparent),
+      transparent 70%
+    ),
+    linear-gradient(
+      to right,
+      color-mix(in oklab, var(--color-night-rule) 35%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklab, var(--color-night-rule) 35%, transparent) 1px,
+      transparent 1px
+    );
+  background-size:
+    100% 100%,
+    48px 48px,
+    48px 48px;
+}
+
+/* Trama diagonal para placeholders de imagen en demo mode. */
+@utility hatch {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in oklab, var(--color-mint) 8%, transparent) 0 2px,
+    transparent 2px 6px
+  );
+}
+
+/* Aparición por bloque del pipeline. */
+@keyframes block-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility block-in {
+  animation: block-in 0.5s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* Cursor del titular que se escribe solo en el top bar. */
+@keyframes caret-blink {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@utility caret {
+  animation: caret-blink 1.1s steps(1) infinite;
+}
+
+/* Paneles que flotan fuera de fase; solo en modo demo. */
+@keyframes drift {
+  from {
+    transform: translateY(-4px);
+  }
+  to {
+    transform: translateY(4px);
+  }
+}
+
+@utility drift {
+  animation: drift 7s ease-in-out infinite alternate;
+}
+
+/* Barra de progreso animada: sweep del stage en curso. */
+@keyframes stage-sweep {
+  from {
+    background-position: -120% 0;
+  }
+  to {
+    background-position: 220% 0;
+  }
+}
+
+@utility stage-sweep {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklab, var(--color-mint) 40%, transparent) 40%,
+    color-mix(in oklab, var(--color-mint) 60%, transparent) 50%,
+    color-mix(in oklab, var(--color-mint) 40%, transparent) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: stage-sweep 1.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
