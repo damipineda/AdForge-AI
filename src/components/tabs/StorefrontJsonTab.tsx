@@ -116,13 +116,15 @@ function downloadFile(name: string, contents: string, mime: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-/** Reemplaza los data URL de los pósters por un resumen para que la vista
+/** Reemplaza los data URL de las piezas por un resumen para que la vista
  * "Campaign raw" no tenga que renderizar megabytes de base64 en el <pre>. */
 function sanitizePosters(result: CampaignResult) {
+  const summary = (p: string | null) =>
+    p ? `«pieza generada · ~${Math.round(p.length / 1024)} KB de base64»` : null;
   return {
     ...result,
-    posterImages: result.posterImages.map((p) =>
-      p ? `«póster generado · ~${Math.round(p.length / 1024)} KB de base64»` : null,
-    ),
+    feedImages: result.feedImages.map(summary),
+    storyImage: summary(result.storyImage),
+    carouselImages: result.carouselImages?.map(summary) ?? null,
   };
 }

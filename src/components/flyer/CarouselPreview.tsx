@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import type { CampaignResult, CarouselSlide } from "@/lib/schema/campaign";
+import { loadImageElement } from "@/lib/flyer/image-loader";
 import { ReviewNotes } from "./ReviewNotes";
 
 const labels: Record<CampaignResult["locale"], string[]> = {
@@ -10,12 +11,16 @@ const labels: Record<CampaignResult["locale"], string[]> = {
   en: ["Attention", "Interest", "Desire", "Action"],
 };
 
-export function CarouselPreview({ result, photoUrl }: { result: CampaignResult; photoUrl: string | null }) {
+export const CarouselPreview = memo(function CarouselPreview({ result, photoUrl }: { result: CampaignResult; photoUrl: string | null }) {
   const [active, setActive] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Clave de lámina: la readiness vieja de otra lámina se ignora comparando.
+  const [readyInfo, setReadyInfo] = useState<{ key: number; ready: boolean }>({ key: -1, ready: false });
+  const ready = readyInfo.key === active && readyInfo.ready;
   const slides = result.carouselSlides ?? [];
   const slide = slides[active];
   const artwork = result.carouselImages?.[active] ?? null;
+  const privacyBlocked = Boolean(result.carouselReviews?.[active]?.issues.some((issue) => issue.category === "privacy"));
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -23,27 +28,36 @@ export function CarouselPreview({ result, photoUrl }: { result: CampaignResult; 
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     let cancelled = false;
-    const image = new Image();
-    image.onload = () => {
-      if (cancelled) return;
-      if (artwork) {
-        canvas.width = image.naturalWidth;
-        canvas.height = image.naturalHeight;
-        ctx.drawImage(image, 0, 0);
-      } else {
-        canvas.width = 1080;
-        canvas.height = 1350;
-        drawSlide(ctx, image, slide, active, result.designData?.secondaryColorHex ?? "#126644");
-      }
-    };
-    image.src = artwork ?? photoUrl ?? "";
-    return () => { cancelled = true; image.onload = null; };
+    const key = active;
+    // Sin setState acá: mientras carga, ready ya es false por clave distinta.
+    // El await es load-bearing: exportar antes del onload sale negro.
+    void loadImageElement(artwork ?? photoUrl ?? "").then(
+      (image) => {
+        if (cancelled) return;
+        if (artwork) {
+          canvas.width = image.naturalWidth;
+          canvas.height = image.naturalHeight;
+          ctx.drawImage(image, 0, 0);
+        } else {
+          // Fallback local en 4:5, la misma proporción de las láminas IA.
+          canvas.width = 1080;
+          canvas.height = 1350;
+          drawSlide(ctx, image, slide, key, result.designData?.secondaryColorHex ?? "#126644");
+        }
+        setReadyInfo({ key, ready: true });
+      },
+      () => {
+        if (cancelled) return;
+        setReadyInfo({ key, ready: false });
+      },
+    );
+    return () => { cancelled = true; };
   }, [slide, active, photoUrl, result.designData, artwork]);
 
   if (!slide) return null;
   const download = () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !ready || privacyBlocked) return;
     const a = document.createElement("a");
     a.href = canvas.toDataURL("image/png");
     a.download = `${result.skuId}-carrusel-${active + 1}.png`;
@@ -60,16 +74,17 @@ export function CarouselPreview({ result, photoUrl }: { result: CampaignResult; 
         ))}
       </div>
       <div className="mx-auto max-w-[450px] overflow-hidden rounded-lg">
-        <canvas ref={canvasRef} role="img" aria-label={`${labels[result.locale][active]}: ${slide.headline}`} className="block h-auto w-full" style={{ aspectRatio: artwork ? "3 / 4" : "4 / 5" }} />
+        {privacyBlocked && <p className="p-6 text-sm text-amber-300" role="alert">La lámina puede mostrar información sensible. Ocultá esos datos en la foto original y generá nuevamente.</p>}
+        <canvas ref={canvasRef} role="img" aria-label={`${labels[result.locale][active]}: ${slide.headline}`} className={privacyBlocked ? "hidden" : "block h-auto w-full"} style={{ aspectRatio: "4 / 5" }} />
       </div>
       <p className="text-sm text-paper-dim">{slide.body}</p>
       {result.carouselReviews?.[active] && <ReviewNotes review={result.carouselReviews[active]} />}
       {!artwork && <p className="text-xs text-paper-muted">Lámina local con foto original{result.carouselErrors?.[active] ? `: ${result.carouselErrors[active]}` : " (modo demo)"}.</p>}
       {active === 2 && <p className="text-xs text-paper-muted">{result.locale === "es" ? "Añade reseñas o testimonios verificados cuando estén disponibles." : result.locale === "pt" ? "Adicione avaliações verificadas quando disponíveis." : "Add verified reviews when available."}</p>}
-      <button type="button" onClick={download} className="rounded border border-mint/40 bg-mint-soft px-3 py-2 text-xs text-mint">Descargar lámina {active + 1} PNG</button>
+      <button type="button" onClick={download} disabled={!ready || privacyBlocked} title={privacyBlocked ? "Revisá la información sensible" : ready ? undefined : "La lámina aún se está preparando"} className="rounded border border-mint/40 bg-mint-soft px-3 py-2 text-xs text-mint disabled:cursor-wait disabled:opacity-50">{privacyBlocked ? "Descarga bloqueada" : ready ? `Descargar lámina ${active + 1} PNG` : "Preparando lámina…"}</button>
     </section>
   );
-}
+});
 
 function drawSlide(ctx: CanvasRenderingContext2D, img: HTMLImageElement, slide: CarouselSlide, index: number, accent: string) {
   const W = 1080, H = 1350;

@@ -40,19 +40,34 @@ export type ProcessedPhoto = {
 
 const cache = new Map<string, Promise<ProcessedPhoto | null>>();
 
-/** Carga y procesa la foto una sola vez por URL. Devuelve null si no se puede cargar. */
-export function getProcessedPhoto(photoUrl: string | null): Promise<ProcessedPhoto | null> {
+export type ExpectedBbox = { x: number; y: number; width: number; height: number };
+
+/**
+ * Carga y procesa la foto una sola vez por URL (+caja esperada). Si se pasa
+ * la caja de la pasada de visión (`expectedBbox`, normalizada 0..1) y el
+ * recorte flood-fill discrepa de ella (IoU < 0.25: el fondo se comió al
+ * sujeto, ej. carrocería gris comida desde una calle de tierra), el recorte
+ * se descarta y se usa la foto completa con bordes suavizados: un fallback
+ * visible siempre es mejor que un fantasma.
+ */
+export function getProcessedPhoto(
+  photoUrl: string | null,
+  expectedBbox?: ExpectedBbox | null,
+): Promise<ProcessedPhoto | null> {
   if (!photoUrl) return Promise.resolve(null);
-  const hit = cache.get(photoUrl);
+  const key = expectedBbox
+    ? `${photoUrl}#${[expectedBbox.x, expectedBbox.y, expectedBbox.width, expectedBbox.height].map((v) => v.toFixed(2)).join(",")}`
+    : photoUrl;
+  const hit = cache.get(key);
   if (hit) return hit;
-  const p = processPhoto(photoUrl).catch(() => null);
-  cache.set(photoUrl, p);
+  const p = processPhoto(photoUrl, expectedBbox ?? null).catch(() => null);
+  cache.set(key, p);
   return p;
 }
 
 const WORK_MAX = 1000; // lado máximo del lienzo de trabajo (rendimiento)
 
-async function processPhoto(url: string): Promise<ProcessedPhoto | null> {
+async function processPhoto(url: string, expectedBbox: ExpectedBbox | null): Promise<ProcessedPhoto | null> {
   const image = await loadImage(url);
   if (!image || !image.naturalWidth || !image.naturalHeight) return null;
 
@@ -81,9 +96,12 @@ async function processPhoto(url: string): Promise<ProcessedPhoto | null> {
 
   // Confiamos en el recorte sólo si quitó fondo de verdad pero no se comió el sujeto.
   if (removed && coverage > 0.04 && coverage < 0.985) {
-    cctx.putImageData(data, 0, 0);
-    cutoutApplied = true;
-    bbox = tightBox(data, w, h);
+    const candidate = tightBox(data, w, h);
+    if (coverage >= 0.12 && bboxAgreesWithVision(candidate, w, h, expectedBbox)) {
+      cctx.putImageData(data, 0, 0);
+      cutoutApplied = true;
+      bbox = candidate;
+    }
   }
 
   const palette = extractPalette(data, w, h, cutoutApplied);
@@ -175,8 +193,7 @@ function floodFillBackground(
 }
 
 /** Caja ajustada (en píxeles de trabajo) de todo píxel con alpha > 8. */
-function tightBox(data: ImageData, w: number, h: number): { x: number; y: number; w: number; h: number } {
-  const px = data.data;
+function tightBox(data: ImageData, w: number, h: number): { x: number; y: number; w: number; h: number } {  const px = data.data;
   let minX = w;
   let minY = h;
   let maxX = 0;
@@ -195,6 +212,36 @@ function tightBox(data: ImageData, w: number, h: number): { x: number; y: number
   }
   if (!found) return { x: 0, y: 0, w, h };
   return { x: minX, y: minY, w: Math.max(1, maxX - minX + 1), h: Math.max(1, maxY - minY + 1) };
+}
+
+/**
+ * El recorte flood-fill se valida contra la caja de la pasada de visión
+ * (SAM): si el IoU es bajo, el fondo se filtró dentro del sujeto (ej. gris
+ * del auto comido desde la calle) y el recorte se descarta. Sin caja
+ * esperada no hay nada contra qué validar: se acepta.
+ */
+function bboxAgreesWithVision(
+  candidate: { x: number; y: number; w: number; h: number },
+  w: number,
+  h: number,
+  expected: ExpectedBbox | null,
+): boolean {
+  if (!expected) return true;
+  const ax0 = candidate.x / w;
+  const ay0 = candidate.y / h;
+  const ax1 = (candidate.x + candidate.w) / w;
+  const ay1 = (candidate.y + candidate.h) / h;
+  const bx0 = Math.min(1, Math.max(0, expected.x));
+  const by0 = Math.min(1, Math.max(0, expected.y));
+  const bx1 = Math.min(1, Math.max(0, expected.x + expected.width));
+  const by1 = Math.min(1, Math.max(0, expected.y + expected.height));
+  const interW = Math.max(0, Math.min(ax1, bx1) - Math.max(ax0, bx0));
+  const interH = Math.max(0, Math.min(ay1, by1) - Math.max(ay0, by0));
+  const inter = interW * interH;
+  const union =
+    (ax1 - ax0) * (ay1 - ay0) + (bx1 - bx0) * (by1 - by0) - inter;
+  if (union <= 0) return true;
+  return inter / union >= 0.25;
 }
 
 /**

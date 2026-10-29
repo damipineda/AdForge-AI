@@ -47,3 +47,6 @@ next-env.d.ts
 
 # logs locales de next dev
 logs/
+
+# base de datos y archivos persistidos (SQLite + uploads locales)
+data/

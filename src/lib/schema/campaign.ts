@@ -12,8 +12,15 @@ const hex = z.string().trim().regex(/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/, "hex c
 
 export const localeSchema = z.enum(["es", "pt", "en"]);
 export type Locale = z.infer<typeof localeSchema>;
-export const campaignFormatSchema = z.enum(["post", "story", "carousel"]);
-export type CampaignFormat = z.infer<typeof campaignFormatSchema>;
+/**
+ * Placements que pide la campaña. El usuario los elige en la barra de
+ * composición (ComposerBar: feed siempre, story por defecto, carrusel opt-in)
+ * (feed siempre, story por defecto, carrusel opt-in) y el pipeline genera
+ * cada uno en su formato NATIVO: feed y carrusel 4:5, story 9:16.
+ */
+export const placementSchema = z.enum(["feed", "story", "carousel"]);
+export type Placement = z.infer<typeof placementSchema>;
+export const placementsSchema = z.array(placementSchema).min(1).max(3);
 
 export const seoDataSchema = z.strictObject({
   metaTitle: text.max(60),
@@ -43,13 +50,12 @@ export type ProductListing = z.infer<typeof productListingSchema>;
 
 const imageUrl = z.string().trim().min(1).max(500);
 
-export const adVariantSchema = z.strictObject({
-  platform: z.enum(["instagram", "facebook"]),
-  /** Idea estratégica que diferencia esta pieza de las otras dos. */
+export const feedVariantSchema = z.strictObject({
+  /** Idea estratégica que diferencia esta dirección de la otra. */
   concept: text.max(60),
   /** Dirección visual específica que el generador de imagen debe ejecutar. */
   artDirection: text.max(800),
-  /** Estructura compositiva; el Motor de Estilos la fija por posición (V1/V2/V3). */
+  /** Estructura compositiva del fallback local; no define el arte IA. */
   styleArchetype: styleArchetypeSchema,
   hook: text.max(40),
   body: text.max(125),
@@ -57,8 +63,23 @@ export const adVariantSchema = z.strictObject({
   imageUrl,
   /** Beneficios cortos (<=3 palabras c/u) que el flyer muestra como "pills". */
   featurePills: z.array(text.max(28)).max(3).default([]),
+  /** Copy del post adaptado por red: mismo asset 4:5, texto propio. */
+  captionInstagram: text.max(280),
+  captionFacebook: text.max(280),
 });
-export type AdVariant = z.infer<typeof adVariantSchema>;
+export type FeedVariant = z.infer<typeof feedVariantSchema>;
+
+/**
+ * Copy corto de la story 9:16: solo titular + CTA, sin apoyo largo ni pills.
+ * El arte se genera nativo vertical, no es el feed reencuadrado.
+ */
+export const storyCopySchema = z.strictObject({
+  concept: text.max(60),
+  artDirection: text.max(800),
+  hook: text.max(40),
+  cta: text.max(30),
+});
+export type StoryCopy = z.infer<typeof storyCopySchema>;
 
 export const audienceSegmentSchema = z.strictObject({
   name: text.max(80),
@@ -117,6 +138,20 @@ export const flyerTextsSchema = z.strictObject({
 });
 export type FlyerTexts = z.infer<typeof flyerTextsSchema>;
 
+/**
+ * Decisión de fondo tomada por la pasada de visión: cuándo conviene un fondo
+ * sólido / degradado simple y cuándo una escena lifestyle completa.
+ * - `solid`: producto con textura o etiqueta compleja → plano de color pleno.
+ * - `gradient`: producto neutro que necesita jerarquía sin escena.
+ * - `scene`: el contexto de uso vende (comida, moda, hogar) → 3 planos.
+ */
+export const backgroundRecommendationSchema = z.strictObject({
+  mode: z.enum(["solid", "gradient", "scene"]),
+  colorHex: hex.nullable().default(null),
+  reason: text.max(200),
+});
+export type BackgroundRecommendation = z.infer<typeof backgroundRecommendationSchema>;
+
 export const creativeStrategySchema = z.strictObject({
   campaignIdea: text.max(160),
   audience: text.max(160),
@@ -153,17 +188,32 @@ export const studioSceneSchema = z.strictObject({
 export type StudioScene = z.infer<typeof studioSceneSchema>;
 
 export const visualIssueSchema = z.strictObject({
-  category: z.enum(["product", "scene", "culture", "typography", "composition", "copy", "diversity"]),
+  category: z.enum(["product", "scene", "culture", "typography", "composition", "copy", "diversity", "privacy"]),
   severity: z.enum(["critical", "warning"]),
   description: text.max(300),
   suggestion: text.max(300),
   affectedIndices: z.array(z.number().int().min(1).max(3)).max(3),
 });
+/**
+ * Checks estructurados de la revisión: la UI los muestra con badges en vez de
+ * una caja negra. `dimensions` lo calcula el servidor (determinístico, desde
+ * los píxeles reales); el resto los informa el revisor visual.
+ */
+export const reviewCheckSchema = z.strictObject({
+  id: z.enum(["dimensions", "safe_zones", "fidelity", "coherence"]),
+  passed: z.boolean(),
+  detail: text.max(140),
+});
+export type ReviewCheck = z.infer<typeof reviewCheckSchema>;
+
 export const visualReviewSchema = z.strictObject({
   status: z.enum(["reviewed", "needs_review", "unavailable", "not_generated"]),
   summary: text.max(350),
   issues: z.array(visualIssueSchema).max(8),
   retryCount: z.number().int().min(0).max(1),
+  checks: z.array(reviewCheckSchema).max(4).default([]),
+  /** Motivo del reintento (primer issue crítico) cuando hubo regeneración. */
+  retryReason: text.max(300).nullable().default(null),
 });
 export type VisualReview = z.infer<typeof visualReviewSchema>;
 
@@ -188,36 +238,71 @@ export const campaignResultSchema = z.strictObject({
   model: z.string().nullable(),
   skuId: text,
   locale: localeSchema,
-  format: campaignFormatSchema.default("post"),
+  placements: placementsSchema,
   carouselSlides: z.array(carouselSlideSchema).length(4).nullable().default(null),
   carouselImages: z.array(z.string().nullable()).length(4).nullable().default(null),
   carouselErrors: z.array(z.string().nullable()).length(4).nullable().default(null),
   creativeStrategy: creativeStrategySchema,
   planReview: z.strictObject({ status: z.enum(["reviewed", "unavailable"]), summary: text.max(350) }),
+  copyReview: z.strictObject({ status: z.enum(["reviewed", "needs_review", "unavailable"]), summary: text.max(350) }).default({ status: "unavailable", summary: "Esta campaña no incluye revisión editorial automática." }),
   reviewRequired: z.literal(true),
   listing: productListingSchema,
-  adVariants: z.array(adVariantSchema).length(3),
+  /** Dos direcciones creativas para feed 4:5 (sirve Instagram y Facebook). */
+  feedVariants: z.array(feedVariantSchema).length(2),
+  /** Copy de la story 9:16; `null` si el placement no se pidió. */
+  story: storyCopySchema.nullable().default(null),
   audiences: z.array(audienceSegmentSchema).min(1).max(6),
   imageAssets: z.array(imageAssetSchema).min(2).max(8),
   segmentation: segmentationSchema,
   flyerTexts: flyerTextsSchema,
+  /** Escenas del fallback local: [0] feed V1, [1] feed V2, [2] story. */
   studioScenes: z.array(studioSceneSchema).length(3),
   /** Paleta real + arquetipo recomendado, extraídos de la foto por visión. */
   designData: photoDesignSchema.nullable().default(null),
+  /** Decisión de fondo (sólido vs escena) tomada por la visión. */
+  background: backgroundRecommendationSchema.nullable().default(null),
+  /** Cuántos productos trae la campaña (1 = individual, >1 = flyer conjunto). */
+  productCount: z.number().int().min(1).max(4).default(1),
   /**
-   * Póster publicitario generado por el modelo de imagen para cada variante,
-   * como data URL (`data:image/png;base64,...`). `null` cuando la generación
-   * falló o no hay llave: el cliente compone el flyer con Canvas como fallback.
+   * Arte 4:5 generado por el modelo de imagen para cada dirección de feed,
+   * como data URL. `null` cuando la generación falló o no hay llave: el
+   * cliente compone el flyer con Canvas como fallback.
    */
-  posterImages: z.array(z.string().nullable()).length(3).default([null, null, null]),
+  feedImages: z.array(z.string().nullable()).length(2).default([null, null]),
   /**
-   * Motivo por el que esa variante NO tiene póster de IA (`null` cuando sí lo
+   * Motivo por el que esa dirección NO tiene arte de IA (`null` cuando sí lo
    * tiene). Sin esto, una tarjeta generada por el compositor Canvas se ve igual
    * a una por cuota agotada: el usuario no puede distinguir "código roto" de
    * "falta billing". Se muestra en la UI al pasar por encima el badge LOCAL.
    */
-  posterErrors: z.array(z.string().nullable()).length(3).default([null, null, null]),
-  visualReviews: z.array(visualReviewSchema).length(3),
+  feedErrors: z.array(z.string().nullable()).length(2).default([null, null]),
+  /** Arte 9:16 nativo de la story; `null` si no se pidió o falló. */
+  storyImage: z.string().nullable().default(null),
+  storyError: z.string().nullable().default(null),
+  feedReviews: z.array(visualReviewSchema).length(2),
+  storyReview: visualReviewSchema.nullable().default(null),
+  /**
+   * Dimensiones REALES medidas en píxeles del arte IA entregado (`null` si la
+   * pieza es composición local o no se pudo medir). El export del cliente
+   * normaliza a 1080x1350 (feed) / 1080x1920 (story) en todos los casos.
+   */
+  artworkDims: z.strictObject({
+    feed: z.array(z.strictObject({ width: z.number().int().min(1), height: z.number().int().min(1) }).nullable()).length(2),
+    story: z.strictObject({ width: z.number().int().min(1), height: z.number().int().min(1) }).nullable(),
+  }),
+  /** Datos comerciales opcionales que el merchant completa en la subida. */
+  merchant: z.strictObject({
+    price: text.max(64).nullable().default(null),
+    link: text.max(500).nullable().default(null),
+  }).default({ price: null, link: null }),
+  /** Micro-línea legal cuando aplica (ej. alimento congelado + plato servido). */
+  legalDisclaimer: text.max(80).nullable().default(null),
+  /**
+   * Afirmaciones permitidas extraídas del empaque (ej. "4 unidades",
+   * "sin gluten"). El copy debe construirse SOLO con estas; el validador
+   * determinístico bloquea lo que se salga del léxico prohibido.
+   */
+  allowedClaims: z.array(text.max(120)).max(8).default([]),
   carouselReviews: z.array(visualReviewSchema).length(4).nullable(),
   diversityReview: visualReviewSchema,
   timings: pipelineTimingsSchema,
@@ -275,20 +360,24 @@ export function toMetaCatalogFeed(c: CampaignResult) {
     "brand",
     "product_type",
     "google_product_category",
+    "price",
+    "link",
   ];
-  const heroByAd = c.adVariants.map((v, i) => {
+  const heroByAd = c.feedVariants.map((v, i) => {
     const studio = c.imageAssets.find((img) => img.slot === `studio-${i + 1}`);
-    const link = studio && /^https?:\/\//.test(studio.url) ? studio.url : "";
+    const imageLink = studio && /^https?:\/\//.test(studio.url) ? studio.url : "";
     return [
       `${c.skuId}-v${i + 1}`,
       v.hook,
       v.body,
-      link,
+      imageLink,
       "in stock",
       "new",
       "AdForge AI",
       c.listing.categoryPath,
       c.listing.categoryPath,
+      c.merchant.price ?? "",
+      c.merchant.link ?? "",
     ];
   });
   const rows = [headers, ...heroByAd];

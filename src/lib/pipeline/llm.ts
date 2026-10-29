@@ -1,12 +1,14 @@
 import { metaImageFlyer, metaJson } from "./meta";
 import type { GeneratedImage, ImageInput } from "./image";
+import { redactSensitiveValues } from "./privacy";
 
 export type { GeneratedImage, ImageInput };
 
 /**
  * Router de modelos de la pipeline. Hay UN solo proveedor vivo: el Meta Model
- * API. Texto/visión → `muse-spark-1.3` vía `/v1/responses`; los 3 flyers →
- * `muse-image-1.0` vía `/v1/images/edits` (img2img con la foto real del
+ * API. Texto/visión → `muse-spark-1.3` vía `/v1/responses`; las piezas
+ * (feed, story, carrusel) → `muse-image-1.0` vía `/v1/images/edits` (img2img
+ * fuera del camino: si
  * hace falta reactivar uno, se agrega acá y en `getProvider()`, no en las
  * etapas, que siempre llaman a `llmJson`/`llmImage`.
  *
@@ -26,14 +28,14 @@ export type LlmJsonArgs = {
 
 /** JSON de texto o visión (si `args.image` viene, entra la foto). */
 export async function llmJson<T>(prompt: string, args: LlmJsonArgs = {}): Promise<T> {
-  return metaJson<T>(prompt, args);
+  return redactSensitiveValues(await metaJson<T>(prompt, args));
 }
 
-/** Un flyer terminado, generado a partir de la foto real del producto. */
+/** Una pieza terminada, generada a partir de la foto real del producto. */
 export async function llmImage(
   prompt: string,
   image: ImageInput,
-  opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+  opts: { signal?: AbortSignal; timeoutMs?: number; size?: string } = {},
 ): Promise<GeneratedImage> {
   return metaImageFlyer(prompt, image, opts);
 }

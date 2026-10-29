@@ -1,24 +1,36 @@
-import type { CampaignFormat, CampaignResult, StageEvent } from "@/lib/schema/campaign";
+import type { CampaignResult, Placement, StageEvent } from "@/lib/schema/campaign";
 
 export type SseEvent =
   | { kind: "stage"; payload: StageEvent }
   | { kind: "result"; payload: CampaignResult }
   | { kind: "error"; payload: { message: string } };
 
+export type MerchantInput = { price: string };
+
 /**
- * Sube la imagen, consume el stream SSE del route handler y emite eventos
+ * Sube 1-4 imágenes, consume el stream SSE del route handler y emite eventos
  * tipados. El frontend los reinyecta en el estado del dashboard.
  */
 export async function* streamCampaign(
-  file: File,
+  files: File | File[],
   locale: "es" | "pt" | "en",
-  format: CampaignFormat,
+  placements: Placement[],
+  merchant: MerchantInput = { price: "" },
+  opts: { groupMode?: boolean } = {},
   signal?: AbortSignal,
 ): AsyncGenerator<SseEvent> {
+  const list = (Array.isArray(files) ? files : [files]).filter(Boolean).slice(0, 4);
   const body = new FormData();
-  body.append("image", file, file.name);
+  list.forEach((file, i) => {
+    body.append(`image_${i}`, file, file.name);
+  });
+  // Compat: el backend viejo leía `image`; se sigue enviando la primera.
+  if (list[0]) body.append("image", list[0], list[0].name);
   body.append("locale", locale);
-  body.append("format", format);
+  body.append("placements", placements.join(","));
+  body.append("productCount", String(list.length));
+  body.append("groupMode", opts.groupMode ?? list.length > 1 ? "true" : "false");
+  if (merchant.price.trim()) body.append("price", merchant.price.trim().slice(0, 64));
 
   const response = await fetch("/api/generate-campaign", {
     method: "POST",

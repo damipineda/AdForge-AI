@@ -1,7 +1,8 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
-import type { PhotoDesignData } from "@/lib/schema/campaign";
+import { forwardRef, memo, useEffect, useImperativeHandle, useRef } from "react";
+import { fitStrategy } from "@/lib/flyer/fit";
+import { loadImageElement } from "@/lib/flyer/image-loader";
 import type { FlyerCanvasHandle } from "./FlyerCanvas";
 
 type GeneratedFlyerCanvasProps = {
@@ -10,29 +11,42 @@ type GeneratedFlyerCanvasProps = {
    * los píxeles: acá NO se compone nada encima — lo que se ve es lo que se
    * descarga. */
   artworkUrl: string;
-  /** Paleta extraída de la foto (visión): se usa solo para rellenar las
-   * bandas laterales cuando el arte IA no viene en 3:4 exacto. */
-  designData: PhotoDesignData | null;
-  story?: boolean;
-  width?: number;
-  height?: number;
+  /** Tamaño EXACTO de exportación del placement (feed 1080x1350, story
+   * 1080x1920). El lienzo siempre sale en estas dimensiones. */
+  targetWidth: number;
+  targetHeight: number;
+  /** Proporción CSS del placement ("4 / 5" feed/carrusel, "9 / 16" story). */
+  aspect?: string;
   className?: string;
+  /** Informa cómo se encuadró el arte (para el badge "Arte extendido"). */
+  onRender?: (info: { extended: boolean; srcWidth: number; srcHeight: number }) => void;
+  /** Avisa cuando el primer frame quedó dibujado (para habilitar descarga/zoom). */
+  onReadyChange?: (ready: boolean) => void;
+  /** La imagen no se pudo cargar: el padre muestra toast en vez de negro. */
+  onError?: (message: string) => void;
 };
 
-export const GeneratedFlyerCanvas = forwardRef<
-  FlyerCanvasHandle,
-  GeneratedFlyerCanvasProps
->(function GeneratedFlyerCanvas(
-  { artworkUrl, designData, width, height, className, story = false },
-  ref,
-) {
+export const GeneratedFlyerCanvas = memo(
+  forwardRef<FlyerCanvasHandle, GeneratedFlyerCanvasProps>(function GeneratedFlyerCanvas(
+    { artworkUrl, targetWidth, targetHeight, className, aspect = "4 / 5", onRender, onReadyChange, onError },
+    ref,
+  ) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const readyRef = useRef(false);
+  // Callbacks por ref: si entraran en las deps, cada render del padre
+  // recargaría la imagen y el canvas parpadearía en loop.
+  const callbacksRef = useRef({ onRender, onReadyChange, onError });
+  callbacksRef.current = { onRender, onReadyChange, onError };
+  const setReady = (ready: boolean) => {
+    readyRef.current = ready;
+    callbacksRef.current.onReadyChange?.(ready);
+  };
 
   useImperativeHandle(ref, () => ({
-    toPng: () => canvasRef.current?.toDataURL("image/png") ?? null,
+    toPng: () => (readyRef.current ? (canvasRef.current?.toDataURL("image/png") ?? null) : null),
     download: (filename: string) => {
       const canvas = canvasRef.current;
-      if (!canvas) return;
+      if (!canvas || !readyRef.current) return;
       const anchor = document.createElement("a");
       anchor.href = canvas.toDataURL("image/png");
       anchor.download = filename;
@@ -40,6 +54,7 @@ export const GeneratedFlyerCanvas = forwardRef<
       anchor.click();
       document.body.removeChild(anchor);
     },
+    isReady: () => readyRef.current,
   }));
 
   useEffect(() => {
@@ -47,133 +62,115 @@ export const GeneratedFlyerCanvas = forwardRef<
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
 
-    const W = width ?? 768;
-    const H = height ?? 1024;
-    canvas.width = W;
-    canvas.height = H;
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+    setReady(false);
     let cancelled = false;
-    const image = new Image();
-    image.onload = () => {
-      if (cancelled) return;
-      // El arte IA ya viene en 2K (1536x2048). Si el caller no fijó un tamaño
-      // explícito, el lienzo toma las dimensiones NATURALES de la imagen: así
-      // el PNG descargado conserva la resolución del modelo en vez de bajarla
-      // a 768 px. El CSS mantiene el aspect 3:4 en pantalla.
-      if (story) {
-        canvas.width = 1080;
-        canvas.height = 1920;
-        ctx.fillStyle = designData?.dominantColorHex ?? "#15181f";
-        ctx.fillRect(0, 0, 1080, 1920);
-        // 3:4 centrado entre las bandas reservadas para controles de Stories.
-        ctx.save();
-        ctx.translate(0, 240);
-        draw(ctx, image, 1080, 1440, designData);
-        ctx.restore();
-        return;
-      }
-      if (!width || !height) {
-        canvas.width = image.naturalWidth || W;
-        canvas.height = image.naturalHeight || H;
-      }
-      draw(ctx, image, canvas.width, canvas.height, designData);
-    };
-    image.src = artworkUrl;
+    // El await es load-bearing: dibujar/exportar antes del onload sale negro.
+    void loadImageElement(artworkUrl).then(
+      (image) => {
+        if (cancelled) return;
+        const extended = drawExact(ctx, image, targetWidth, targetHeight);
+        callbacksRef.current.onRender?.({ extended, srcWidth: image.naturalWidth, srcHeight: image.naturalHeight });
+        setReady(true);
+      },
+      (error: unknown) => {
+        if (cancelled) return;
+        setReady(false);
+        callbacksRef.current.onError?.(error instanceof Error ? error.message : "No se pudo cargar la imagen para exportar.");
+      },
+    );
 
     return () => {
       cancelled = true;
-      image.onload = null;
     };
-  }, [artworkUrl, designData, width, height, story]);
+  }, [artworkUrl, targetWidth, targetHeight]);
 
   return (
     <canvas
       ref={canvasRef}
       className={className}
-      style={{ width: "100%", height: "auto", display: "block", aspectRatio: story ? "9 / 16" : "3 / 4" }}
+      style={{ width: "100%", height: "auto", display: "block", aspectRatio: aspect }}
     />
   );
-});
+  }),
+);
 
 /**
- * Renderizado del arte IA: la imagen generada se muestra COMPLETA, protegida
- * contra recortes que rompan la tipografía horneada. Si el modelo respetó el
- * 3:4 pedido, se llena el cuadro (cover). Si trajo otra proporción, en lugar
- * de recortar se encaja (fit) y las bandas sobrantes se rellenan con un
- * degradé de la paleta real de la foto (o neutro oscuro), para que el PNG
- * descargado siga siendo 3:4 sin arruinar el diseño.
+ * Exportación a dimensiones EXACTAS del placement, sin deformar jamás.
+ * Devuelve `true` si hubo que extender (mismatch de aspecto) para que la UI
+ * lo señalice. Ver `fitStrategy` (testeado) para la decisión crop/extend.
  */
-function draw(
+function drawExact(
   ctx: CanvasRenderingContext2D,
   image: HTMLImageElement,
   W: number,
   H: number,
-  designData: PhotoDesignData | null,
-) {
+): boolean {
   const iw = image.naturalWidth || W;
   const ih = image.naturalHeight || H;
-  const srcRatio = iw / ih;
-  const dstRatio = W / H;
-  const skew = Math.abs(srcRatio - dstRatio) / dstRatio;
+  const { mode } = fitStrategy(iw, ih, W, H);
 
-  if (skew <= 0.06) {
-    // Proporción ok (≤6% de desvío): cover sin recortes perceptibles de copy.
-    coverDraw(ctx, image, W, H);
-    return;
+  if (mode === "crop") {
+    const scale = Math.max(W / iw, H / ih);
+    const dw = iw * scale;
+    const dh = ih * scale;
+    ctx.drawImage(image, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    return false;
   }
 
-  fillBands(ctx, W, H, dstRatio, srcRatio, designData);
-  const scale = Math.min(W / iw, H / ih);
-  const dw = iw * scale;
-  const dh = ih * scale;
-  ctx.drawImage(image, (W - dw) / 2, (H - dh) / 2, dw, dh);
+  gradientExtend(ctx, image, iw, ih, W, H);
+  return true;
 }
 
-function coverDraw(
+/**
+ * Extensión con degradado muestreado del propio arte (plan B intencional, no
+ * relleno borroso): el fondo es un degradado vertical entre el color medio
+ * del borde superior e inferior del arte, levemente oscurecido, y encima va
+ * el arte nítido completo, encajado y centrado, sin recortes ni deformación.
+ */
+function gradientExtend(
   ctx: CanvasRenderingContext2D,
   image: HTMLImageElement,
+  iw: number,
+  ih: number,
   W: number,
   H: number,
 ) {
-  const scale = Math.max(W / image.naturalWidth, H / image.naturalHeight);
-  const dw = image.naturalWidth * scale;
-  const dh = image.naturalHeight * scale;
-  ctx.drawImage(image, (W - dw) / 2, (H - dh) / 2, dw, dh);
-}
-
-const NEUTRAL_BANDS: [string, string, string] = ["#0d0f14", "#15181f", "#0d0f14"];
-
-function fillBands(
-  ctx: CanvasRenderingContext2D,
-  W: number,
-  H: number,
-  dstRatio: number,
-  srcRatio: number,
-  designData: PhotoDesignData | null,
-) {
-  const stops = bandStops(designData);
-  const g = srcRatio > dstRatio
-    ? ctx.createLinearGradient(0, 0, 0, H) // banda arriba/abajo → gradiente vertical
-    : ctx.createLinearGradient(0, 0, W, 0); // bandas laterales → gradiente horizontal
-  g.addColorStop(0, stops[0]);
-  g.addColorStop(0.5, stops[1]);
-  g.addColorStop(1, stops[2]);
+  const top = edgeColor(image, "top");
+  const bottom = edgeColor(image, "bottom");
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, shade(top, 0.88));
+  g.addColorStop(1, shade(bottom, 0.88));
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, W, H);
+
+  const fscale = Math.min(W / iw, H / ih);
+  const fw = iw * fscale;
+  const fh = ih * fscale;
+  ctx.drawImage(image, (W - fw) / 2, (H - fh) / 2, fw, fh);
 }
 
-function bandStops(designData: PhotoDesignData | null): [string, string, string] {
-  const hex = /^#[0-9a-fA-F]{6}$/;
-  const d = designData?.dominantColorHex ?? "";
-  const s = designData?.secondaryColorHex ?? "";
-  if (hex.test(d) && hex.test(s)) return [shade(d, 0.72), shade(s, 0.8), shade(d, 0.72)];
-  return NEUTRAL_BANDS;
+/** Color medio del borde superior o inferior del arte (muestreo 16x16). */
+function edgeColor(image: HTMLImageElement, edge: "top" | "bottom"): [number, number, number] {
+  const sample = document.createElement("canvas");
+  sample.width = 16;
+  sample.height = 16;
+  const sctx = sample.getContext("2d", { willReadFrequently: true });
+  if (!sctx) return [21, 24, 31];
+  sctx.drawImage(image, 0, 0, 16, 16);
+  const row = edge === "top" ? 0 : 15;
+  const data = sctx.getImageData(0, row, 16, 1).data;
+  let r = 0, green = 0, b = 0;
+  for (let x = 0; x < 16; x++) {
+    r += data[x * 4];
+    green += data[x * 4 + 1];
+    b += data[x * 4 + 2];
+  }
+  return [Math.round(r / 16), Math.round(green / 16), Math.round(b / 16)];
 }
 
-/** Oscurece un hex para que las bandas no compitan con el flyer. */
-function shade(hex: string, factor: number): string {
-  const n = Number.parseInt(hex.slice(1), 16);
-  const r = Math.round(((n >> 16) & 0xff) * factor);
-  const g = Math.round(((n >> 8) & 0xff) * factor);
-  const b = Math.round((n & 0xff) * factor);
-  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+function shade([r, g, b]: [number, number, number], factor: number): string {
+  const c = (v: number) => Math.max(0, Math.min(255, Math.round(v * factor)));
+  return `rgb(${c(r)},${c(g)},${c(b)})`;
 }

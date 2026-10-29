@@ -2,7 +2,8 @@
 /**
  * Smoke test del pipeline. Requiere que `pnpm dev` esté corriendo en :3000.
  * Sube un PNG fixture, consume el SSE y valida que lleguen los 8 eventos de
- * stage + 1 resultado parseable. Sale con exit code 1 si algo falla.
+ * stage + 1 resultado parseable con piezas por placement. Sale con exit
+ * code 1 si algo falla.
  */
 const BASE = process.env.SMOKE_BASE ?? "http://localhost:3000";
 
@@ -46,15 +47,27 @@ if (result.data.mode !== "demo") {
   console.error(`mode esperado 'demo', recibí '${result.data.mode}'.`);
   process.exit(1);
 }
-if (result.data.adVariants.length !== 3) {
-  console.error("adVariants debería tener 3 elementos.");
+if (JSON.stringify(result.data.placements) !== JSON.stringify(["feed", "story"])) {
+  console.error(`placements por defecto deben ser ["feed","story"], recibí ${JSON.stringify(result.data.placements)}.`);
+  process.exit(1);
+}
+if (result.data.feedVariants.length !== 2) {
+  console.error("feedVariants debería tener 2 elementos.");
+  process.exit(1);
+}
+if (!result.data.story?.hook || !result.data.story?.cta) {
+  console.error("La story por defecto debe traer hook y cta.");
+  process.exit(1);
+}
+if (!result.data.feedVariants.every((v) => v.captionInstagram && v.captionFacebook)) {
+  console.error("Cada dirección de feed debe traer caption de Instagram y Facebook.");
   process.exit(1);
 }
 if (!result.data.creativeStrategy?.campaignIdea || !result.data.creativeStrategy?.visualWorld) {
   console.error("La campaña debe incluir estrategia y mundo visual.");
   process.exit(1);
 }
-if (result.data.visualReviews?.length !== 3 || result.data.visualReviews.some((review) => review.status !== "not_generated") || result.data.diversityReview.status !== "unavailable") {
+if (result.data.feedReviews?.length !== 2 || result.data.feedReviews.some((review) => review.status !== "not_generated") || result.data.storyReview?.status !== "not_generated" || result.data.diversityReview.status !== "unavailable") {
   throw new Error("El modo demo debe identificar la revisión visual como no realizada.");
 }
 if (!result.data.designData?.dominantColorHex || !result.data.designData?.secondaryColorHex) {
@@ -65,19 +78,39 @@ if (result.data.imageAssets.length !== 4) {
   console.error("imageAssets debería tener 4 elementos (cutout + 3 studios).");
   process.exit(1);
 }
+if (result.data.carouselSlides !== null) {
+  console.error("Sin placement carousel, carouselSlides debe ser null.");
+  process.exit(1);
+}
+if (!result.data.artworkDims || result.data.artworkDims.feed.length !== 2) {
+  console.error("artworkDims debe traer dims de feed×2 y story.");
+  process.exit(1);
+}
+if (result.data.feedReviews.some((r) => !r.checks.some((c) => c.id === "dimensions" && c.passed))) {
+  console.error("Cada review de demo debe traer el check dimensions en verde (Canvas local exacto).");
+  process.exit(1);
+}
+if (result.data.legalDisclaimer !== null) {
+  console.error("El producto demo (termo) no debe traer disclaimer legal.");
+  process.exit(1);
+}
+if (!Array.isArray(result.data.allowedClaims) || result.data.allowedClaims.length === 0) {
+  console.error("allowedClaims debe traer los hechos del empaque demo.");
+  process.exit(1);
+}
 
 console.log("OK ·", result.data.skuId, "·", result.data.timings.total, "ms");
 
-for (const format of ["story", "carousel"]) {
+for (const placements of ["feed", "feed,story,carousel"]) {
   const request = new FormData();
   request.append("image", new Blob([tinyPng], { type: "image/png" }), "smoke.png");
   request.append("locale", "es");
-  request.append("format", format);
+  request.append("placements", placements);
   const response = await fetch(`${BASE}/api/generate-campaign`, { method: "POST", body: request });
   const frames = parseSse(await response.text());
   const campaign = frames.find((frame) => frame.event === "result")?.data;
-  if (!response.ok || !campaign || campaign.format !== format) throw new Error(`Falló el formato ${format}`);
-  if (format === "carousel") {
+  if (!response.ok || !campaign || campaign.placements.join(",") !== placements) throw new Error(`Fallaron los placements ${placements}`);
+  if (placements.includes("carousel")) {
     const stages = campaign.carouselSlides?.map((slide) => slide.stage);
     if (JSON.stringify(stages) !== JSON.stringify(["attention", "interest", "desire", "action"])) {
       throw new Error(`Etapas incorrectas del carrusel: ${JSON.stringify(stages)}`);
@@ -88,10 +121,29 @@ for (const format of ["story", "carousel"]) {
     if (campaign.carouselReviews?.length !== 4 || campaign.carouselReviews.some((review) => review.status !== "not_generated")) {
       throw new Error("Las láminas locales de demo no deben figurar como revisadas.");
     }
-  } else if (campaign.creativeStrategy.carouselRecommended && campaign.carouselSlides?.length !== 4) {
-    throw new Error("El carrusel recomendado debe acompañar a la historia.");
+  } else {
+    if (campaign.story !== null || campaign.storyReview !== null) {
+      throw new Error("Sin placement story, story y storyReview deben ser null.");
+    }
   }
-  console.log(`OK · formato ${format}`);
+  console.log(`OK · placements ${placements}`);
+}
+
+// Merchant opcional: viaja al resultado para el CSV de Meta Catalog.
+{
+  const request = new FormData();
+  request.append("image", new Blob([tinyPng], { type: "image/png" }), "smoke.png");
+  request.append("locale", "es");
+  request.append("price", "Gs. 35.000");
+  request.append("link", "https://wa.me/595981000000");
+  const response = await fetch(`${BASE}/api/generate-campaign`, { method: "POST", body: request });
+  const frames = parseSse(await response.text());
+  const campaign = frames.find((frame) => frame.event === "result")?.data;
+  if (!response.ok || !campaign) throw new Error("Falló la corrida con merchant");
+  if (campaign.merchant?.price !== "Gs. 35.000" || campaign.merchant?.link !== "https://wa.me/595981000000") {
+    throw new Error(`Merchant no volvió en el resultado: ${JSON.stringify(campaign.merchant)}`);
+  }
+  console.log("OK · merchant price/link");
 }
 
 function parseSse(raw) {

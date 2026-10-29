@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 :root {
-  --background: #071310;
-  --foreground: #eaece6;
+  --background: #0d1117;
+  --foreground: #f0f6fc;
 }
 
 @theme inline {
@@ -13,33 +13,33 @@
   --font-display: var(--font-bricolage);
 }
 
-/* Paleta nocturna AdForge — heredada de la agenda nocturna de ReservaPy,
-   extendida con jerarquía de texto legible sobre `night`. */
+/* Tema gris GitHub (dark dimmed): paneles #161b22 sobre fondo #0d1117,
+   bordes #30363d, texto #f0f6fc / #c9d1d9 / #8b949e, acento azul #58a6ff. */
 @theme {
-  --color-night: #071310;
-  --color-night-panel: #0d1f19;
-  --color-night-panel-elevated: #123028;
-  --color-night-rule: #1a3029;
-  --color-night-rule-strong: #24493e;
+  --color-night: #0d1117;
+  --color-night-panel: #161b22;
+  --color-night-panel-elevated: #1c2128;
+  --color-night-rule: #30363d;
+  --color-night-rule-strong: #3d444d;
 
-  --color-mint: #4fe3a1;
-  --color-mint-dark: #17b57a;
-  --color-mint-soft: #4fe3a120;
+  --color-mint: #58a6ff;
+  --color-mint-dark: #1f6feb;
+  --color-mint-soft: #58a6ff1f;
 
-  --color-paper: #f7f8f4;
-  --color-paper-dim: #b9c7c0;
-  --color-paper-muted: #6e8079;
+  --color-paper: #f0f6fc;
+  --color-paper-dim: #c9d1d9;
+  --color-paper-muted: #8b949e;
 
-  --color-ink: #0e1c17;
-  --color-ink-soft: #46564e;
+  --color-ink: #0d1117;
+  --color-ink-soft: #6e7681;
 
-  --color-brand: #0f6b4f;
-  --color-brand-dark: #0a4f39;
+  --color-brand: #1f6feb;
+  --color-brand-dark: #1158c7;
 
-  --color-signal: #f3b34a;
-  --color-signal-dark: #a66a00;
-  --color-danger: #ef6b5c;
-  --color-danger-dark: #a3271f;
+  --color-signal: #d29922;
+  --color-signal-dark: #9e6a03;
+  --color-danger: #f85149;
+  --color-danger-dark: #da3633;
 }
 
 @layer base {
@@ -62,28 +62,28 @@
   }
 }
 
-/* Glow radial que respira detrás del panel de resultados. */
+/* Trama de puntos GitHub sobre fondo gris. */
 @utility night-glow {
   background-image:
     radial-gradient(
-      60rem 28rem at 50% 0%,
-      color-mix(in oklab, var(--color-mint) 11%, transparent),
+      60rem 22rem at 50% 0%,
+      color-mix(in oklab, var(--color-mint) 7%, transparent),
       transparent 70%
     ),
     linear-gradient(
       to right,
-      color-mix(in oklab, var(--color-night-rule) 35%, transparent) 1px,
+      color-mix(in oklab, var(--color-night-rule) 45%, transparent) 1px,
       transparent 1px
     ),
     linear-gradient(
       to bottom,
-      color-mix(in oklab, var(--color-night-rule) 35%, transparent) 1px,
+      color-mix(in oklab, var(--color-night-rule) 45%, transparent) 1px,
       transparent 1px
     );
   background-size:
     100% 100%,
-    48px 48px,
-    48px 48px;
+    32px 32px,
+    32px 32px;
 }
 
 /* Trama diagonal para placeholders de imagen en demo mode. */

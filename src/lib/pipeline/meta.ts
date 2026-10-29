@@ -8,6 +8,8 @@
  * - `POST /v1/images/edits` (multipart `model` + `prompt` + `image` + `size`)
  *   → `data[0].b64_json`. Es el camino img2img: conserva el producto de la foto
  *   y hornea la tipografía. El mime real viene de `output_format` (webp/png).
+ *   `size` es "WxH" y la API lo ajusta al encuadre nativo más cercano
+ *   (verificado 28-oct-2026: 4:5 → 1408x1760, 9:16 → 1152x2048).
  * - `POST /v1/responses` con `text.format = json_schema` → `output[]` con
  *   `reasoning` + `message/output_text`. Es el único endpoint de texto, y
  *   `/v1/chat/completions` lo dice explícitamente: "image models are only
@@ -30,8 +32,13 @@ import type { GeneratedImage, ImageInput } from "./image";
 const BASE = "https://api.meta.ai/v1";
 const DEFAULT_SPARK_MODEL = "muse-spark-1.3";
 const DEFAULT_IMAGE_MODEL = "muse-image-1.0";
-/** 3:4 en alta: la proporción del flyer y el techo razonable de `size`. */
-const DEFAULT_IMAGE_SIZE = "1536x2048";
+/**
+ * La API acepta `size` como "WxH" y lo ajusta al encuadre nativo más cercano
+ * preservando el aspecto (verificado 28-oct-2026 con scripts/image-size-probe.mjs):
+ * feed/carrusel 4:5 → 1408x1760, story 9:16 → 1152x2048.
+ */
+const DEFAULT_FEED_SIZE = "1080x1350";
+const DEFAULT_STORY_SIZE = "1080x1920";
 
 /** Los pasos de razonamiento de muse-spark-1.3 son largos (576 tokens en la
  * prueba para 3 hooks). 90s deja margen sin colgar la corrida. */
@@ -61,8 +68,22 @@ export function metaImageModel(): string {
   return (process.env.MUSE_IMAGE_MODEL ?? DEFAULT_IMAGE_MODEL).trim() || DEFAULT_IMAGE_MODEL;
 }
 
-function metaImageSize(): string {
-  return (process.env.MUSE_IMAGE_SIZE ?? DEFAULT_IMAGE_SIZE).trim() || DEFAULT_IMAGE_SIZE;
+/** Tamaño pedido para feed 4:5 y carrusel. `MUSE_IMAGE_SIZE` legado vale para ambos. */
+export function feedImageSize(): string {
+  return (
+    process.env.MUSE_IMAGE_SIZE_FEED?.trim() ||
+    process.env.MUSE_IMAGE_SIZE?.trim() ||
+    DEFAULT_FEED_SIZE
+  );
+}
+
+/** Tamaño pedido para la story 9:16 nativa. */
+export function storyImageSize(): string {
+  return (
+    process.env.MUSE_IMAGE_SIZE_STORY?.trim() ||
+    process.env.MUSE_IMAGE_SIZE?.trim() ||
+    DEFAULT_STORY_SIZE
+  );
 }
 
 function authHeaders(): Record<string, string> {
@@ -79,6 +100,37 @@ function timedSignal(caller: AbortSignal | undefined, timeoutMs: number): AbortS
 function apiError(model: string, status: number, body: string): Error {
   const message = /"message"\s*:\s*"([^"]{1,300})/.exec(body)?.[1] ?? body.slice(0, 200);
   return new Error(`Meta ${model} → HTTP ${status}: ${message}`);
+}
+
+/** Un reintento ante HTTP 5xx o red caída (nunca ante abort, timeout ni
+ * 4xx): un 500 aislado no debería mandar la pieza al fallback local. El
+ * presupuesto total de timeout se comparte entre ambos intentos. */
+async function postMeta(
+  url: string,
+  init: RequestInit,
+  model: string,
+  timeoutMs: number,
+): Promise<{ ok: boolean; status: number; raw: string }> {
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await sleep(1500);
+    try {
+      const res = await fetch(url, init);
+      const raw = await res.text().catch(() => "");
+      if (res.status >= 500 && attempt === 0) continue;
+      return { ok: res.ok, status: res.status, raw };
+    } catch (err: unknown) {
+      if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
+        throw new Error(`Meta ${model}: se superó el límite de ${timeoutMs} ms.`);
+      }
+      lastErr = err;
+    }
+  }
+  throw new Error(`Meta ${model}: red caída (${String(lastErr)}).`);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ── Texto / JSON ────────────────────────────────────────────────────────────
@@ -146,20 +198,19 @@ export async function metaJson<T>(
       : { text: { format: { type: "json_object" } } }),
   };
 
-  const res = await fetch(`${BASE}/responses`, {
-    method: "POST",
-    headers: { ...authHeaders(), "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: timedSignal(args.signal, args.timeoutMs ?? TEXT_TIMEOUT_MS),
-  }).catch((err: unknown) => {
-    if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
-      throw new Error(`Meta ${model}: se superó el límite de ${args.timeoutMs ?? TEXT_TIMEOUT_MS} ms.`);
-    }
-    throw new Error(`Meta ${model}: red caída (${String(err)}).`);
-  });
+  const { ok, status, raw } = await postMeta(
+    `${BASE}/responses`,
+    {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: timedSignal(args.signal, args.timeoutMs ?? TEXT_TIMEOUT_MS),
+    },
+    model,
+    args.timeoutMs ?? TEXT_TIMEOUT_MS,
+  );
 
-  const raw = await res.text();
-  if (!res.ok) throw apiError(model, res.status, raw);
+  if (!ok) throw apiError(model, status, raw);
   const parsed = JSON.parse(raw) as MetaResponse;
   const text = textOf(parsed);
   if (!text) throw new Error(`Meta ${model} respondió sin texto (status=${parsed.status ?? "?"}).`);
@@ -243,7 +294,7 @@ type MetaImagesResponse = {
 export async function metaImageFlyer(
   prompt: string,
   photo: ImageInput,
-  opts: { signal?: AbortSignal; timeoutMs?: number } = {},
+  opts: { signal?: AbortSignal; timeoutMs?: number; size?: string } = {},
 ): Promise<GeneratedImage> {
   const model = metaImageModel();
   const bytes = Buffer.from(photo.base64, "base64");
@@ -251,22 +302,21 @@ export async function metaImageFlyer(
   form.append("model", model);
   form.append("prompt", prompt);
   form.append("image", new Blob([bytes], { type: photo.mimeType }), "producto");
-  form.append("size", metaImageSize());
+  form.append("size", opts.size?.trim() || feedImageSize());
 
-  const res = await fetch(`${BASE}/images/edits`, {
-    method: "POST",
-    headers: authHeaders(),
-    body: form,
-    signal: timedSignal(opts.signal, opts.timeoutMs ?? IMAGE_TIMEOUT_MS),
-  }).catch((err: unknown) => {
-    if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
-      throw new Error(`Meta ${model}: se superó el límite de ${opts.timeoutMs ?? IMAGE_TIMEOUT_MS} ms.`);
-    }
-    throw new Error(`Meta ${model}: red caída (${String(err)}).`);
-  });
+  const { ok, status, raw } = await postMeta(
+    `${BASE}/images/edits`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: form,
+      signal: timedSignal(opts.signal, opts.timeoutMs ?? IMAGE_TIMEOUT_MS),
+    },
+    model,
+    opts.timeoutMs ?? IMAGE_TIMEOUT_MS,
+  );
 
-  const raw = await res.text();
-  if (!res.ok) throw apiError(model, res.status, raw);
+  if (!ok) throw apiError(model, status, raw);
   const parsed = JSON.parse(raw) as MetaImagesResponse;
   const b64 = parsed.data?.[0]?.b64_json;
   if (!b64) throw new Error(`Meta ${model} respondió sin imagen.`);

@@ -1,52 +1,101 @@
 "use client";
 
-import { useRef, useState } from "react";
-import { Camera, Check, Copy, Download, Images, Layers, Users } from "lucide-react";
-import type { AdVariant, CampaignResult, FlyerTexts, StudioScene } from "@/lib/schema/campaign";
+import { memo, useCallback, useRef, useState } from "react";
+import { Check, Copy, Download, Images, Layers, RectangleVertical, Smartphone, TriangleAlert } from "lucide-react";
+import type { PhotoDesignData, Segmentation, StudioScene, StyleArchetype, VisualReview } from "@/lib/schema/campaign";
 import type { CutoutMode } from "@/lib/flyer/photo";
 import { FlyerCanvas, type FlyerCanvasHandle } from "./FlyerCanvas";
 import { GeneratedFlyerCanvas } from "./GeneratedFlyerCanvas";
+import { ReviewChecks } from "./ReviewChecks";
 import { ReviewNotes } from "./ReviewNotes";
 
 type FlyerCardProps = {
-  ad: AdVariant;
+  /** "FEED 4:5 · V1" / "STORY 9:16": placement real, no red social. */
+  kicker: string;
+  filename: string;
+  concept: string;
+  hook: string;
+  /** Apoyo largo; `null` en la story (titular + CTA). */
+  body: string | null;
+  cta: string;
+  benefit: string;
+  featurePills: string[];
   scene: StudioScene;
-  flyerTexts: FlyerTexts;
-  result: CampaignResult;
+  styleArchetype: StyleArchetype;
+  segmentation: Segmentation;
+  designData: PhotoDesignData | null;
   previewUrl: string | null;
   /**
-   * Arte del paso de imagen (data URL): el flyer IA completo (img2img con la
-   * foto real) que se muestra crudo, sin composición encima. `null` →
+   * Arte del paso de imagen (data URL): la pieza IA completa (img2img con la
+   * foto real) que se muestra cruda, sin composición encima. `null` →
    * composición 100% local con Canvas.
    */
   posterUrl: string | null;
-  index: number;
+  fallbackReason: string | null;
+  review: VisualReview | null;
+  story?: boolean;
   cutoutMode: CutoutMode;
 };
 
-export function FlyerCard({
-  ad,
+export const FlyerCard = memo(function FlyerCard({
+  kicker,
+  filename,
+  concept,
+  hook,
+  body,
+  cta,
+  benefit,
+  featurePills,
   scene,
-  flyerTexts,
-  result,
+  styleArchetype,
+  segmentation,
+  designData,
   previewUrl,
   posterUrl,
-  index,
+  fallbackReason,
+  review,
+  story = false,
   cutoutMode,
 }: FlyerCardProps) {
   const canvasRef = useRef<FlyerCanvasHandle>(null);
   const [copied, setCopied] = useState(false);
   const [zoomSrc, setZoomSrc] = useState<string | null>(null);
-  const [placement, setPlacement] = useState<"post" | "story">("post");
+  // A qué arte corresponde el último reporte de encuadre: si el arte cambió y
+  // el canvas aún no reportó, el badge viejo se ignora sin necesidad de efecto.
+  const [renderInfo, setRenderInfo] = useState<{ src: string | null; extended: boolean }>({ src: null, extended: false });
+  const extended = renderInfo.src === posterUrl && renderInfo.extended;
+  // Rama de render (arte IA o composición local + modo): la readiness vieja
+  // de otra rama se ignora comparando, sin efectos ni loops.
+  const branchKey = posterUrl ?? `local:${cutoutMode}`;
+  const [readyInfo, setReadyInfo] = useState<{ src: string | null; ready: boolean }>({ src: null, ready: false });
+  const ready = readyInfo.src === branchKey && readyInfo.ready;
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const fullCopy = `${ad.hook}\n\n${ad.body}\n\n${ad.cta}`;
-  const benefit = flyerTexts.bullets[0] ?? result.listing.shortPitch;
-  const filename = `${result.skuId}-${placement}-V${index + 1}.png`;
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3500);
+  }, []);
+
+  // Callbacks estables: si se recrearan por render, los efectos de los
+  // canvas recargarían la imagen en loop (= parpadeo).
+  const handleRender = useCallback(
+    (info: { extended: boolean }) => setRenderInfo({ src: posterUrl, extended: info.extended }),
+    [posterUrl],
+  );
+  const handleReadyChange = useCallback(
+    (isReady: boolean) => setReadyInfo({ src: branchKey, ready: isReady }),
+    [branchKey],
+  );
+  const handleCanvasError = useCallback(
+    (message: string) => showToast(message),
+    [showToast],
+  );
+
+  const fullCopy = body ? `${hook}\n\n${body}\n\n${cta}` : `${hook}\n\n${cta}`;
   const rawPoster = posterUrl !== null;
-  // Por qué esta variante terminó compuesta en Canvas: sin esto, un fallback por
-  // cuota agotada se ve idéntico a un bug, y se pierde el tiempo diagnosticando
-  // código que funciona.
-  const fallbackReason = posterUrl ? null : (result.posterErrors[index] ?? null);
+  const privacyBlocked = Boolean(review?.issues.some((issue) => issue.category === "privacy"));
 
   const handleCopy = async () => {
     try {
@@ -59,82 +108,108 @@ export function FlyerCard({
   };
 
   const handleDownload = () => {
-    canvasRef.current?.download(filename);
+    if (privacyBlocked) return;
+    if (!ready || !canvasRef.current?.isReady()) {
+      showToast("La imagen aún se está preparando, probá en unos segundos.");
+      return;
+    }
+    canvasRef.current.download(filename);
+    // Señal humana de éxito para el skill: esta pieza gustó lo suficiente
+    // como para exportarla. El Dashboard la escucha y la registra.
+    window.dispatchEvent(new CustomEvent("adforge:export", { detail: { filename } }));
+  };
+
+  const handleZoom = () => {
+    if (!ready) {
+      showToast("La imagen aún se está preparando, probá en unos segundos.");
+      return;
+    }
+    const png = canvasRef.current?.toPng() ?? posterUrl;
+    if (png) setZoomSrc(png);
+    else showToast("No se pudo generar la vista ampliada.");
   };
 
   return (
     <div className="flex flex-col overflow-hidden rounded-xl border border-night-rule bg-night-panel">
       <div className="flex items-center justify-between border-b border-night-rule px-3 py-2">
         <span className="inline-flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-paper-muted">
-          {ad.platform === "instagram" ? (
-            <Camera className="h-3.5 w-3.5 text-mint" />
+          {story ? (
+            <Smartphone className="h-3.5 w-3.5 text-mint" />
           ) : (
-            <Users className="h-3.5 w-3.5 text-mint" />
+            <RectangleVertical className="h-3.5 w-3.5 text-mint" />
           )}
-          {ad.platform} · V{index + 1}
+          {kicker}
         </span>
-        <span
-          className={
-            "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider " +
-            (posterUrl
-              ? "border-mint/40 bg-mint-soft text-mint"
-              : "border-night-rule-strong bg-night text-paper-muted")
-          }
-          title={
-            posterUrl
-              ? rawPoster
-                ? "Flyer completo generado con IA (img2img con tu foto)"
-                : "Fondo generado con IA + producto real compuesto localmente"
-              : fallbackReason
-                ? `Composición local con Canvas. Motivo: ${fallbackReason}`
-                : "Composición local con Canvas (fallback)"
-          }
-        >
-          {posterUrl ? <Images className="h-3 w-3" /> : <Layers className="h-3 w-3" />}
-          {posterUrl ? (rawPoster ? "Imagen IA" : "Fondo IA + producto") : "Local"}
+        <span className="inline-flex items-center gap-1.5">
+          {extended && posterUrl && (
+            <span
+              className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-amber-300"
+              title="El proveedor devolvió otro aspecto y el export extendió el fondo con degradado para llegar al tamaño exacto"
+            >
+              Arte extendido
+            </span>
+          )}
+          <span
+            className={
+              "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider " +
+              (posterUrl
+                ? "border-mint/40 bg-mint-soft text-mint"
+                : "border-night-rule-strong bg-night text-paper-muted")
+            }
+            title={
+              posterUrl
+                ? "Pieza completa generada con IA (img2img con tu foto)"
+                : fallbackReason
+                  ? `Composición local con Canvas. Motivo: ${fallbackReason}`
+                  : "Composición local con Canvas (fallback)"
+            }
+          >
+            {posterUrl ? <Images className="h-3 w-3" /> : <Layers className="h-3 w-3" />}
+            {posterUrl ? "Imagen IA" : "Local"}
+          </span>
         </span>
       </div>
 
       <div className="bg-night p-3">
-        <div className="mb-2 flex gap-2" aria-label={`Formato de la variante ${index + 1}`}>
-          <button type="button" onClick={() => setPlacement("post")} aria-pressed={placement === "post"} className={`rounded px-3 py-1 text-xs ${placement === "post" ? "bg-mint-soft text-mint" : "text-paper-muted"}`}>Post</button>
-          <button type="button" onClick={() => setPlacement("story")} aria-pressed={placement === "story"} className={`rounded px-3 py-1 text-xs ${placement === "story" ? "bg-mint-soft text-mint" : "text-paper-muted"}`}>Historia 9:16</button>
-        </div>
         <div className="overflow-hidden rounded-lg border border-night-rule">
-          {rawPoster ? (
+          {privacyBlocked ? (
+            <p className="p-6 text-sm text-amber-300" role="alert">Se detectó o no se pudo descartar información sensible. La vista y descarga están bloqueadas. Ocultá la patente en la foto original y generá nuevamente.</p>
+          ) : rawPoster ? (
             <div
-              className="cursor-zoom-in"
-              onClick={() => setZoomSrc(canvasRef.current?.toPng() ?? posterUrl)}
+              className={ready ? "cursor-zoom-in" : "cursor-wait"}
+              onClick={() => {
+                if (!zoomSrc) handleZoom();
+              }}
               title="Ver imagen en tamaño completo"
             >
-              <GeneratedFlyerCanvas ref={canvasRef} artworkUrl={posterUrl} designData={result.designData} story={placement === "story"} />
+              <GeneratedFlyerCanvas ref={canvasRef} artworkUrl={posterUrl} targetWidth={1080} targetHeight={story ? 1920 : 1350} aspect={story ? "9 / 16" : "4 / 5"} onRender={handleRender} onReadyChange={handleReadyChange} onError={handleCanvasError} />
             </div>
           ) : (
             <div
-              className={zoomSrc ? "cursor-zoom-in" : undefined}
+              className={ready && !zoomSrc ? "cursor-zoom-in" : undefined}
               onClick={() => {
-                if (!zoomSrc) {
-                  const png = canvasRef.current?.toPng();
-                  if (png) setZoomSrc(png);
-                }
+                if (!zoomSrc) handleZoom();
               }}
               title="Ver composición en tamaño completo"
             >
               <FlyerCanvas
                 ref={canvasRef}
                 photoUrl={previewUrl}
-                segmentation={result.segmentation}
+                segmentation={segmentation}
                 scene={scene}
-                styleArchetype={ad.styleArchetype}
-                designData={result.designData}
+                styleArchetype={styleArchetype}
+                designData={designData}
                 stageUrl={posterUrl}
                 badge={scene.badge}
-                hook={ad.hook}
-                cta={ad.cta}
+                hook={hook}
+                cta={cta}
                 benefit={benefit}
-                featurePills={ad.featurePills}
+                featurePills={featurePills}
                 cutoutMode={cutoutMode}
-                story={placement === "story"}
+                width={1080}
+                height={story ? 1920 : 1350}
+                story={story}
+                onReadyChange={handleReadyChange}
               />
             </div>
           )}
@@ -155,19 +230,19 @@ export function FlyerCard({
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={zoomSrc}
-            alt={`Flyer V${index + 1}`}
+            alt={kicker}
             className="max-h-full max-w-full rounded-md object-contain shadow-2xl"
           />
         </div>
       ) : null}
 
-      <div className="flex flex-1 flex-col gap-3 p-3">
-        <p className="font-mono text-[10px] uppercase tracking-widest text-mint">
-          {ad.concept}
+      <div className="flex min-w-0 flex-1 flex-col gap-3 p-3">
+        <p className="break-words font-mono text-[10px] uppercase tracking-widest text-mint">
+          {concept}
         </p>
-        <p className="text-sm leading-relaxed text-paper-dim">{ad.body}</p>
-        <ReviewNotes review={result.visualReviews[index]} />
-        {placement === "story" && <p className="text-[11px] text-paper-muted">La revisión se hizo sobre el post original; comprobá también la adaptación 9:16.</p>}
+        {body ? <p className="break-words text-sm leading-relaxed text-paper-dim">{body}</p> : null}
+        <ReviewChecks review={review} />
+        <ReviewNotes review={review} />
         <div className="mt-auto flex flex-wrap gap-2">
           <button
             type="button"
@@ -180,13 +255,24 @@ export function FlyerCard({
           <button
             type="button"
             onClick={handleDownload}
-            className="inline-flex items-center gap-1.5 rounded border border-mint/40 bg-mint-soft px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest text-mint transition-colors hover:bg-mint hover:text-ink"
+            disabled={!ready || privacyBlocked}
+            title={privacyBlocked ? "Revisá los datos sensibles antes de generar de nuevo" : ready ? undefined : "La imagen aún se está preparando"}
+            className="inline-flex items-center gap-1.5 rounded border border-mint/40 bg-mint-soft px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest text-mint transition-colors hover:bg-mint hover:text-ink disabled:cursor-wait disabled:opacity-50 disabled:hover:bg-mint-soft disabled:hover:text-mint"
           >
             <Download className="h-3 w-3" />
-            Descargar {placement === "story" ? "historia" : "post"} PNG
+            {privacyBlocked ? "Descarga bloqueada" : ready ? `Descargar ${story ? "historia" : "feed"} PNG` : "Preparando imagen…"}
           </button>
         </div>
       </div>
+      {toast ? (
+        <div
+          role="alert"
+          className="fixed bottom-6 left-1/2 z-[60] flex max-w-sm -translate-x-1/2 items-center gap-2 rounded-lg border border-danger-dark/40 bg-night-panel px-4 py-2.5 text-sm text-paper shadow-2xl"
+        >
+          <TriangleAlert className="h-4 w-4 shrink-0 text-danger" />
+          {toast}
+        </div>
+      ) : null}
     </div>
   );
-}
+});

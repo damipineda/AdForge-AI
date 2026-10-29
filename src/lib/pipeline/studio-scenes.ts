@@ -121,17 +121,18 @@ const sceneResponseSchema = {
 export async function requestScenes(productDescription: string, signal?: AbortSignal): Promise<StudioScene[]> {
   const prompt =
     `Sos director de arte de e-commerce. Para este producto: "${productDescription}"\n\n` +
-    "Diseñá 3 escenas de estudio fotográfico para flyers publicitarios. Orden fijo: " +
-    "1) Estudio Minimalista, 2) Lifestyle Cálida, 3) Dark/Neón Comercial.\n" +
+    "Diseñá 3 direcciones visuales distintas y relacionadas con el producto, sin asignar estilos fijos por número. " +
+    "Pueden usar tratamiento fotográfico, gráfico o un fondo simple según el concepto.\n" +
+    "Distinguí las ideas y composiciones; los materiales y superficies son opcionales y deben tener relación con el producto.\n" +
     "Para cada escena devolvé:\n" +
     "- name (<=40 chars, en español)\n" +
     "- background: 2 o 3 colores HEX (#rrggbb) del degradé de fondo, coherentes con el producto\n" +
     "- accent: HEX para badge y botón CTA\n" +
     "- textColor: HEX legible sobre el fondo (claro si el fondo es oscuro, viceversa)\n" +
-    "- lighting: una de radial-top|vignette|neon-rim|soft-window|spotlight\n" +
+    "- lighting: una de radial-top|vignette|neon-rim|soft-window|spotlight (distinta en cada escena)\n" +
     "- shadow: una de soft|hard|colored|none\n" +
     "- badge: texto neutral DESTACADO, sin ofertas ni condiciones inventadas\n" +
-    "- vibe: frase corta describiendo el estilo\n" +
+    "- vibe: frase corta describiendo estilo, superficie y luz (ej. 'Cuarzo blanco, luz de ventana suave')\n" +
     "Los colores deben dar contraste alto para que el texto se lea.";
   const raw = await llmJson<{ studio_scenes?: unknown }>(prompt, {
     schema: sceneResponseSchema,

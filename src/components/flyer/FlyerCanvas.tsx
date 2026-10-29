@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
+import { forwardRef, memo, useEffect, useImperativeHandle, useRef } from "react";
 import type { PhotoDesignData, Segmentation, StudioScene, StyleArchetype } from "@/lib/schema/campaign";
 import {
   getProcessedPhoto,
@@ -15,13 +15,15 @@ import { ARCHETYPE_META, buildStyleTheme, type StyleTheme } from "@/lib/flyer/st
 export type FlyerCanvasHandle = {
   download: (filename: string) => void;
   toPng: () => string | null;
+  /** `false` hasta que el primer frame quedó dibujado: exportar antes sale negro. */
+  isReady: () => boolean;
 };
 
 export type FlyerCanvasProps = {
   photoUrl: string | null;
   segmentation: Segmentation;
   scene: StudioScene;
-  /** Arquetipo FIJO del Motor de Estilos (V1 editorial-poster, V2 split-commerce, V3 bold-dark). */
+  /** Arquetipo del Motor de Estilos para esta pieza (feed: el de su dirección; story: el recomendado por visión). */
   styleArchetype: StyleArchetype;
   /** Paleta + arquetipo extraídos de la foto por la pasada de visión. */
   designData: PhotoDesignData | null;
@@ -38,6 +40,8 @@ export type FlyerCanvasProps = {
   height?: number;
   className?: string;
   story?: boolean;
+  /** Avisa cuando el primer frame quedó dibujado (para habilitar descarga/zoom). */
+  onReadyChange?: (ready: boolean) => void;
 };
 
 const FONT = "'Bricolage Grotesque', system-ui, sans-serif";
@@ -59,6 +63,8 @@ type RenderArgs = {
   theme: StyleTheme;
   copy: Copy;
   mode: CutoutMode;
+  /** Story 9:16: titulares y CTA respetan las safe zones de Meta (15% sup / 22% inf). */
+  story: boolean;
 };
 
 /**
@@ -74,15 +80,24 @@ type RenderArgs = {
  * imagen. Ninguna pieza de texto invade la caja del producto y el producto
  * nunca se dibuja sobre la zona tipográfica.
  */
-export const FlyerCanvas = forwardRef<FlyerCanvasHandle, FlyerCanvasProps>(
-  function FlyerCanvas(props, ref) {
+export const FlyerCanvas = memo(
+  forwardRef<FlyerCanvasHandle, FlyerCanvasProps>(function FlyerCanvas(props, ref) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const readyRef = useRef(false);
+    // Callbacks por ref para que NUNCA disparen el efecto (un callback inline
+    // como dep recargaría el canvas en cada render del padre = parpadeo).
+    const onReadyChangeRef = useRef(props.onReadyChange);
+    onReadyChangeRef.current = props.onReadyChange;
+    const setReady = (ready: boolean) => {
+      readyRef.current = ready;
+      onReadyChangeRef.current?.(ready);
+    };
 
     useImperativeHandle(ref, () => ({
-      toPng: () => canvasRef.current?.toDataURL("image/png") ?? null,
+      toPng: () => (readyRef.current ? (canvasRef.current?.toDataURL("image/png") ?? null) : null),
       download: (filename: string) => {
         const canvas = canvasRef.current;
-        if (!canvas) return;
+        if (!canvas || !readyRef.current) return;
         const a = document.createElement("a");
         a.href = canvas.toDataURL("image/png");
         a.download = filename;
@@ -90,6 +105,7 @@ export const FlyerCanvas = forwardRef<FlyerCanvasHandle, FlyerCanvasProps>(
         a.click();
         document.body.removeChild(a);
       },
+      isReady: () => readyRef.current,
     }));
 
     useEffect(() => {
@@ -98,10 +114,14 @@ export const FlyerCanvas = forwardRef<FlyerCanvasHandle, FlyerCanvasProps>(
       const ctx = canvas.getContext("2d");
       if (!ctx) return;
 
-      const W = props.width ?? 768;
-      const H = props.height ?? 1024;
-      canvas.width = props.story ? 1080 : W;
-      canvas.height = props.story ? 1920 : H;
+      // Story local NATIVA 9:16: los renderers usan coordenadas relativas a
+      // W/H, así que componer directo en 1080x1920 adapta la misma estructura
+      // al vertical sin bandas de relleno.
+      const W = props.story ? 1080 : (props.width ?? 1080);
+      const H = props.story ? 1920 : (props.height ?? 1350);
+      canvas.width = W;
+      canvas.height = H;
+      setReady(false);
 
       let cancelled = false;
       const copy: Copy = {
@@ -115,7 +135,7 @@ export const FlyerCanvas = forwardRef<FlyerCanvasHandle, FlyerCanvasProps>(
       // Foto procesada + escenario IA cargan en paralelo; si el escenario
       // falla o no existe, los renderers pintan su fondo local de siempre.
       void Promise.all([
-        getProcessedPhoto(props.photoUrl),
+        getProcessedPhoto(props.photoUrl, props.segmentation),
         loadImageEl(props.stageUrl ?? null),
       ]).then(([pp, stage]) => {
         if (cancelled || !ctx) return;
@@ -128,12 +148,6 @@ export const FlyerCanvas = forwardRef<FlyerCanvasHandle, FlyerCanvasProps>(
         const rand = makeRand([props.styleArchetype, props.hook, props.cta, props.benefit].join("\u0001"));
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.save();
-        if (props.story) {
-          ctx.fillStyle = theme.night;
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.translate(0, 240);
-          ctx.scale(1080 / W, 1440 / H);
-        }
         const args: RenderArgs = {
           ctx,
           W,
@@ -144,6 +158,7 @@ export const FlyerCanvas = forwardRef<FlyerCanvasHandle, FlyerCanvasProps>(
           theme,
           copy,
           mode: props.cutoutMode,
+          story: props.story === true,
         };
         const renderers: Record<StyleArchetype, (args: RenderArgs) => void> = {
           "editorial-poster": renderEditorialPoster,
@@ -152,6 +167,7 @@ export const FlyerCanvas = forwardRef<FlyerCanvasHandle, FlyerCanvasProps>(
         };
         renderers[props.styleArchetype](args);
         ctx.restore();
+        setReady(true);
       });
 
       return () => {
@@ -179,10 +195,10 @@ export const FlyerCanvas = forwardRef<FlyerCanvasHandle, FlyerCanvasProps>(
       <canvas
         ref={canvasRef}
         className={props.className}
-        style={{ width: "100%", height: "auto", display: "block", aspectRatio: props.story ? "9 / 16" : "3 / 4" }}
+        style={{ width: "100%", height: "auto", display: "block", aspectRatio: props.story ? "9 / 16" : "4 / 5" }}
       />
     );
-  },
+  }),
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -223,7 +239,7 @@ function makeRand(source: string): () => number {
  * inferior derecho con sombra de apoyao — sin fondo de color, sin marco — y un
  * botón RECTANGULAR fino y pequeño anclado a la base.
  */
-function renderEditorialPoster({ ctx, W, H, pp, stage, rand, theme, copy, mode }: RenderArgs) {
+function renderEditorialPoster({ ctx, W, H, pp, stage, rand, theme, copy, mode, story }: RenderArgs) {
   const inset = W * 0.034;
   ctx.fillStyle = theme.paper;
   ctx.fillRect(0, 0, W, H);
@@ -249,15 +265,17 @@ function renderEditorialPoster({ ctx, W, H, pp, stage, rand, theme, copy, mode }
   const pad = W * 0.088;
 
   // Fila kicker: motor + badge, tracking abierto, aire editorial.
+  // En story baja del 15% superior (safe zone de Meta).
+  const kickerY = story ? H * 0.16 : H * 0.062;
   ctx.textBaseline = "top";
-  spacedText(ctx, ARCHETYPE_META["editorial-poster"].kicker, pad, H * 0.062, W * 0.021, theme.ink, W * 0.008);
+  spacedText(ctx, ARCHETYPE_META["editorial-poster"].kicker, pad, kickerY, W * 0.021, theme.ink, W * 0.008);
   ctx.textAlign = "left";
-  spacedText(ctx, copy.badge, W - pad, H * 0.063, W * 0.019, withAlpha(theme.ink, 0.5), W * 0.007, "right");
+  spacedText(ctx, copy.badge, W - pad, kickerY, W * 0.019, withAlpha(theme.ink, 0.5), W * 0.007, "right");
 
   // Titular: el protagonista. Contraste de pesos: sans extra-bold + una
   // palabra en serif italic con el acento de la foto.
   const headX = pad;
-  const headY = H * 0.115;
+  const headY = story ? H * 0.20 : H * 0.115;
   const headMaxW = W - pad * 2;
   const headSize = fitLuxuryHeadline(ctx, copy.hook, headMaxW, W * 0.125, H * 0.225, 3);
   drawLuxuryHeadline(ctx, copy.hook, headX, headY, headMaxW, headSize, theme.ink, theme.accent);
@@ -279,21 +297,31 @@ function renderEditorialPoster({ ctx, W, H, pp, stage, rand, theme, copy, mode }
   // campaña para que ninguna pieza repita la composición exacta.
   const productScale = 0.9 + rand() * 0.18; // 0.9–1.08
   const tilt = (rand() - 0.5) * 0.085; // ±2.4°
-  const productBox: Rect = {
-    x: W * (0.33 + rand() * 0.04),
-    y: H * (0.45 + rand() * 0.05),
-    w: W * 0.56 * productScale,
-    h: H * 0.35 * productScale,
-  };
+  // En story la caja se achica y corre a la derecha: el CTA subido a 0.715H
+  // no debe pisar el producto dibujado.
+  const productBox: Rect = story
+    ? {
+        x: W * (0.5 + rand() * 0.03),
+        y: H * (0.4 + rand() * 0.03),
+        w: W * 0.44 * productScale,
+        h: H * 0.26 * productScale,
+      }
+    : {
+        x: W * (0.33 + rand() * 0.04),
+        y: H * (0.45 + rand() * 0.05),
+        w: W * 0.56 * productScale,
+        h: H * 0.35 * productScale,
+      };
   drawProduct(ctx, pp, mode, productBox, { shadow: "floor", rotation: tilt });
 
   // Banda base: regla + botón rectangular fino + beneficio.
-  const ruleY = H * 0.872;
+  // En story sube por encima del 22% inferior (safe zone de Meta).
+  const ruleY = story ? H * 0.70 : H * 0.872;
   ctx.strokeStyle = withAlpha(theme.ink, 0.3);
   ctx.lineWidth = 1;
   line(ctx, pad, ruleY, W - pad, ruleY);
 
-  const btn: Rect = { x: pad, y: H * 0.902, w: W * 0.29, h: H * 0.045 };
+  const btn: Rect = { x: pad, y: story ? H * 0.715 : H * 0.902, w: W * 0.29, h: H * 0.045 };
   ctx.strokeStyle = theme.ink;
   ctx.lineWidth = 1.5;
   roundRectPath(ctx, btn.x, btn.y, btn.w, btn.h, 0);
@@ -416,7 +444,7 @@ function drawLuxuryHeadline(
  * plataforma de conversión: kicker, titular, 3 beneficios con check y un CTA
  * grande y visible. Tipografía toda-sans, blanca/contraste según el degradé.
  */
-function renderSplitCommerce({ ctx, W, H, pp, stage, rand, theme, copy, mode }: RenderArgs) {
+function renderSplitCommerce({ ctx, W, H, pp, stage, rand, theme, copy, mode, story }: RenderArgs) {
   // 1. Fondo: degradé real de la foto (dominante → secundario).
   const bg = ctx.createLinearGradient(0, 0, W, H);
   bg.addColorStop(0, theme.gradientStops[0]);
@@ -501,11 +529,12 @@ function renderSplitCommerce({ ctx, W, H, pp, stage, rand, theme, copy, mode }: 
   };
   drawProduct(ctx, pp, mode, inner, { shadow: "floor", rotation: (rand() - 0.5) * 0.055 });
 
-  // Chip de la oferta flotando sobre la esquina inferior izquierda de la foto.
+  // Chip de la oferta flotando sobre la foto. En story sube por encima del
+  // 22% inferior (safe zone de Meta).
   drawChip(
     ctx,
     panel.x - W * 0.02,
-    panel.y + panel.h - H * 0.062,
+    story ? panel.y + H * 0.58 : panel.y + panel.h - H * 0.062,
     copy.badge,
     theme.accent,
     theme.ink,
@@ -523,21 +552,22 @@ function renderSplitCommerce({ ctx, W, H, pp, stage, rand, theme, copy, mode }: 
     ctx,
     ARCHETYPE_META["split-commerce"].kicker,
     pad,
-    H * 0.062,
+    story ? H * 0.16 : H * 0.062,
     W * 0.02,
     withAlpha(st, 0.85),
     W * 0.008,
   );
 
   // Titular flexible entre kicker y bloque de beneficios.
-  const headY = H * 0.12;
-  const headMaxH = H * 0.3;
+  // En story: debajo del 15% superior y CTA por encima del 22% inferior.
+  const headY = story ? H * 0.20 : H * 0.12;
+  const headMaxH = story ? H * 0.26 : H * 0.3;
   const headSize = fitHeadline(ctx, copy.hook, colW, W * 0.088, headMaxH, 3);
   drawHeadline(ctx, copy.hook, pad, headY, colW, headSize, st);
 
   // Beneficios anclados por ARRIBA del CTA — nunca invaden ni la foto ni el botón.
   const buttonH = H * 0.082;
-  const buttonY = H - H * 0.14 - buttonH / 2 + H * 0.01;
+  const buttonY = story ? H * 0.731 : H - H * 0.14 - buttonH / 2 + H * 0.01;
   const rows = (copy.pills.length ? copy.pills : [copy.benefit]).slice(0, 3);
   const rowSize = W * 0.024;
   const rowH = rowSize * 2.35;
@@ -556,7 +586,7 @@ function renderSplitCommerce({ ctx, W, H, pp, stage, rand, theme, copy, mode }: 
   line(ctx, pad, ry + H * 0.012, pad + colW * 0.55, ry + H * 0.012);
 
   // CTA grande y visible, anclado al fondo del panel de conversión.
-  const btn: Rect = { x: pad, y: H - H * 0.152, w: colW, h: buttonH };
+  const btn: Rect = { x: pad, y: story ? H * 0.69 : H - H * 0.152, w: colW, h: buttonH };
   ctx.save();
   ctx.shadowColor = "rgba(0,0,0,0.35)";
   ctx.shadowBlur = 26;
@@ -584,7 +614,7 @@ function renderSplitCommerce({ ctx, W, H, pp, stage, rand, theme, copy, mode }: 
  * foto + anillo punteado; sello flotante (badge/oferta) en esquina; línea de
  * beneficio centrada; y CTA tipo BANNER ancho en la base.
  */
-function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode }: RenderArgs) {
+function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode, story }: RenderArgs) {
   // Fondo noche + baños de color diagonales muy tenues.
   ctx.fillStyle = theme.night;
   ctx.fillRect(0, 0, W, H);
@@ -620,7 +650,7 @@ function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode }: Rend
     ctx,
     ARCHETYPE_META["bold-dark"].kicker,
     W / 2,
-    H * 0.052,
+    story ? H * 0.16 : H * 0.052,
     W * 0.021,
     theme.accent,
     W * 0.01,
@@ -630,7 +660,7 @@ function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode }: Rend
   ctx.textAlign = "center";
   const headMaxW = W * (0.56 + rand() * 0.12);
   const headSize = fitHeadline(ctx, copy.hook, headMaxW, W * 0.102, H * 0.15, 2);
-  let ty = H * 0.102;
+  let ty = story ? H * 0.20 : H * 0.102;
   for (const lw of layoutWords(ctx, toWords(copy.hook), headMaxW, headSize)) {
     drawRichLineCentered(ctx, lw, W / 2, ty, headSize, "#ffffff", theme.accent);
     ty += headSize * 1.08;
@@ -641,12 +671,19 @@ function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode }: Rend
   // tilt variados por campaña (PRNG), halo alterna acento/secundario.
   const pScale = 0.44 + rand() * 0.16;
   const pTilt = (rand() - 0.5) * 0.12; // ±3.4°
-  const pbCentered: Rect = {
-    x: W / 2 - (W * pScale) / 2,
-    y: H * (0.3 + rand() * 0.045),
-    w: W * pScale,
-    h: H * 0.42,
-  };
+  const pbCentered: Rect = story
+    ? {
+        x: W / 2 - (W * pScale) / 2,
+        y: H * (0.34 + rand() * 0.02),
+        w: W * pScale,
+        h: H * 0.32,
+      }
+    : {
+        x: W / 2 - (W * pScale) / 2,
+        y: H * (0.3 + rand() * 0.045),
+        w: W * pScale,
+        h: H * 0.42,
+      };
   const pb = pbCentered;
   const ccx = pb.x + pb.w / 2;
   const ccy = pb.y + pb.h / 2;
@@ -681,10 +718,11 @@ function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode }: Rend
 
   // Sello flotante (oferta): esquina según el PRNG (3 posiciones).
   const sealPos = Math.floor(rand() * 3);
+  const sealY = (f: number) => (story ? H * f * 0.94 : H * f);
   const sealCfg: Array<{ x: number; y: number; rot: number }> = [
-    { x: W * 0.83, y: H * 0.315, rot: -0.16 },
-    { x: W * 0.17, y: H * 0.315, rot: 0.16 },
-    { x: W * 0.82, y: H * 0.66, rot: -0.13 },
+    { x: W * 0.83, y: sealY(0.315), rot: -0.16 },
+    { x: W * 0.17, y: sealY(0.315), rot: 0.16 },
+    { x: W * 0.82, y: sealY(0.66), rot: -0.13 },
   ];
   ctx.save();
   const se = sealCfg[sealPos];
@@ -697,11 +735,12 @@ function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode }: Rend
   ctx.fillStyle = withAlpha("#ffffff", 0.72);
   ctx.font = `600 ${Math.round(W * 0.023)}px ${FONT}`;
   ctx.textAlign = "center";
-  ctx.fillText(truncate(ctx, copy.benefit, W * 0.72), W / 2, H * 0.845);
+  ctx.fillText(truncate(ctx, copy.benefit, W * 0.72), W / 2, story ? H * 0.665 : H * 0.845);
   ctx.textAlign = "left";
 
   // CTA tipo banner: ancho, casi todo el ancho, con glow.
-  const btn: Rect = { x: W * 0.055, y: H * 0.9, w: W * 0.89, h: H * 0.06 };
+  // En story sube por encima del 22% inferior (safe zone de Meta).
+  const btn: Rect = { x: W * 0.055, y: story ? H * 0.71 : H * 0.9, w: W * 0.89, h: H * 0.06 };
   ctx.save();
   ctx.shadowColor = withAlpha(theme.accent, 0.8);
   ctx.shadowBlur = 24;

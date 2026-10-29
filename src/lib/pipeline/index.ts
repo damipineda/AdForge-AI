@@ -2,15 +2,16 @@ import { createHash } from "node:crypto";
 import {
   campaignResultSchema,
   type CampaignResult,
-  type CampaignFormat,
   type ImageAsset,
   type Locale,
+  type Placement,
   type StageEvent,
 } from "@/lib/schema/campaign";
 import { runSam, type SamInput } from "./sam-segmentation";
 import { runMuseImage, type MuseImageInput } from "./muse-image";
 import { reviewCampaign } from "./visual-review";
 import { reviewCreativePlan } from "./creative-plan";
+import { reviewCampaignCopy } from "./copy-review";
 import { runMuseSpark } from "./muse-spark";
 import { bufferToBase64 } from "./image";
 import { demoBundles } from "./demo-fixtures";
@@ -20,9 +21,16 @@ export type { Provider } from "./provider";
 export { getProvider, toMetaTargeting } from "./provider";
 
 export type PipelineInput = {
-  image: SamInput;
+  /** 1 a 4 fotos de producto. Con >1 se analiza cada una y se agrupa en un
+   * flyer conjunto cuando `groupMode` es true. */
+  images: SamInput[];
+  /** Compat: un solo `image` equivale a `images: [image]`. */
+  image?: SamInput;
   locale: Locale;
-  format: CampaignFormat;
+  placements: Placement[];
+  merchant: { price: string | null; link: string | null };
+  /** Agrupar varios productos en un mismo flyer (default true con >1 foto). */
+  groupMode?: boolean;
 };
 
 export type PipelineHandlers = {
@@ -32,7 +40,7 @@ export type PipelineHandlers = {
 /**
  * Orquesta la pasada de visión -> Muse Spark -> Muse Image emitiendo eventos de
  * stage en cada transición (running/done) para que el route handler los
- * reenvíe como SSE. El copy se escribe antes que los pósters porque Muse Image
+ * reenvíe como SSE. El copy se escribe antes que las piezas porque Muse Image
  * integra el hook real en el diseño. Cada etapa se despacha según el provider:
  * `demo` usa fixtures locales y `meta` llama al Meta Model API.
  */
@@ -50,26 +58,63 @@ export async function runPipeline(
     handlers.onStage(event);
   };
 
+  const images = (input.images?.length ? input.images : input.image ? [input.image] : []).slice(0, 4);
+  if (images.length === 0) throw new Error("Falta al menos una imagen de producto.");
+  const groupMode = input.groupMode ?? images.length > 1;
+  const productCount = images.length;
+
   const samStart = Date.now();
   emit("sam", "running");
-  const sam = await runSam(input.image, provider);
+  const sams = [];
+  for (const img of images) {
+    sams.push(await runSam(img, provider));
+  }
   const samMs = Date.now() - samStart;
   emit("sam", "done", samMs);
 
-  // El copy se escribe ANTES que los pósters: Muse Image integra el hook real
-  // de cada variante en el diseño, así que necesita los textos ya listos.
+  const sam = sams[0];
+  // Descripción conjunta: cada producto numerado para que el copy los agrupe
+  // sin mezclar atributos ("Producto 1: ... / Producto 2: ...").
+  const productDescription = sams
+    .map((s, i) => (productCount > 1 ? `Producto ${i + 1}: ${s.productDescription}` : s.productDescription))
+    .join("\n");
+  // Fondo del conjunto: POR DEFECTO escena. El sólido solo gana por
+  // UNANIMIDAD (todas las fotos lo piden con choque explícito); basta que
+  // una foto pida escena para mantener el entorno fotográfico de estudio y
+  // no destruirlo con un plano que hace ver los productos pegados.
+  const background = pickBackground(sams.map((s) => s.background));
+  const designData = sam.designData;
+
+  // Skill aprendido: reglas activas para esta categoría (puede variar).
+  // Se inyectan en copy, imagen y revisión; con DB vacía es [] y no hay ruido.
+  const { classifyCategory } = await import("@/lib/store/learning");
+  const { getActiveRuleTexts } = await import("@/lib/store/db");
+  const learnedRules = getActiveRuleTexts(classifyCategory(productDescription));
+
+  // El copy se escribe ANTES que las piezas: Muse Image integra el hook real
+  // de cada dirección en el diseño, así que necesita los textos ya listos.
   const sparkStart = Date.now();
   emit("museSpark", "running");
   const spark = await runMuseSpark(
     {
       locale: input.locale,
-      productDescription: sam.productDescription,
-      designData: sam.designData,
+      productDescription,
+      designData,
+      placements: input.placements,
+      merchantLink: input.merchant.link,
+      productCount,
+      groupMode,
+      background,
+      learnedRules,
     },
     provider,
   );
-  const planned = await reviewCreativePlan({ product: sam.productDescription, locale: input.locale, strategy: spark.creativeStrategy, variants: spark.adVariants }, provider);
-  spark.adVariants = planned.variants;
+  const editedCopy = await reviewCampaignCopy({ product: productDescription, locale: input.locale, claims: spark.allowedClaims, strategy: spark.creativeStrategy, feed: spark.feedVariants, story: spark.story, merchantLink: input.merchant.link, legalDisclaimer: spark.legalDisclaimer }, provider);
+  spark.feedVariants = editedCopy.feed;
+  spark.story = editedCopy.story;
+  const planned = await reviewCreativePlan({ product: productDescription, locale: input.locale, strategy: spark.creativeStrategy, feed: spark.feedVariants, story: spark.story }, provider);
+  spark.feedVariants = planned.feed;
+  spark.story = planned.story;
   const sparkMs = Date.now() - sparkStart;
   emit("museSpark", "done", sparkMs);
 
@@ -77,18 +122,26 @@ export async function runPipeline(
   emit("museImage", "running");
   const imageInput: MuseImageInput = {
       locale: input.locale,
-      format: input.format,
-      productDescription: sam.productDescription,
-      designData: sam.designData,
-      photo: { base64: bufferToBase64(input.image.bytes), mimeType: input.image.mimeType },
-      hooks: tuple3(spark.adVariants.map((v) => v.hook), ""),
-      bodies: tuple3(spark.adVariants.map((v) => v.body), ""),
-      ctas: tuple3(spark.adVariants.map((v) => v.cta), ""),
-      concepts: tuple3(spark.adVariants.map((v) => v.concept), ""),
-      artDirections: tuple3(spark.adVariants.map((v) => v.artDirection), ""),
-      pills: tuple3(spark.adVariants.map((v) => v.featurePills), [] as string[]),
+      productDescription,
+      designData,
+      photo: { base64: bufferToBase64(images[0].bytes), mimeType: images[0].mimeType },
+      feed: spark.feedVariants.map((v) => ({
+        hook: v.hook,
+        body: v.body,
+        cta: v.cta,
+        concept: v.concept,
+        artDirection: v.artDirection,
+        pills: v.featurePills,
+        captionInstagram: v.captionInstagram,
+        captionFacebook: v.captionFacebook,
+      })) as MuseImageInput["feed"],
+      story: spark.story ? { hook: spark.story.hook, cta: spark.story.cta, concept: spark.story.concept, artDirection: spark.story.artDirection } : null,
       creativeStrategy: spark.creativeStrategy,
-      carouselSlides: input.format === "carousel" || spark.creativeStrategy.carouselRecommended ? spark.carouselSlides : null,
+      carouselSlides: input.placements.includes("carousel") ? spark.carouselSlides : null,
+      productCount,
+      groupMode,
+      background,
+      learnedRules,
     };
   const initialImage = await runMuseImage(imageInput, provider);
   const imageMs = Date.now() - imageStart;
@@ -97,6 +150,19 @@ export async function runPipeline(
   const reviewStart = Date.now();
   emit("review", "running");
   const quality = await reviewCampaign(imageInput, initialImage, provider);
+  const captionFeedback = quality.feedReviews.flatMap((review) => review.issues.filter((issue) => /^DESCRIPCI[ÓO]N:/i.test(issue.description)).map((issue) => `${issue.description} ${issue.suggestion}`));
+  let finalCopyReview = editedCopy.copyReview;
+  if (provider === "meta" && captionFeedback.length > 0) {
+    const artworks = quality.image.feed.map((url) => {
+      const match = url?.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/);
+      return match ? { mimeType: match[1], base64: match[2] } : null;
+    });
+    if (artworks.every((artwork) => artwork !== null)) {
+      const corrected = await reviewCampaignCopy({ product: productDescription, locale: input.locale, claims: spark.allowedClaims, strategy: spark.creativeStrategy, feed: spark.feedVariants, story: spark.story, merchantLink: input.merchant.link, legalDisclaimer: spark.legalDisclaimer, artworks: artworks as Array<{ mimeType: string; base64: string }>, feedback: captionFeedback, captionsOnly: true }, provider);
+      spark.feedVariants = corrected.feed;
+      finalCopyReview = corrected.copyReview;
+    }
+  }
   const reviewMs = Date.now() - reviewStart;
   emit("review", "done", reviewMs);
   const image = quality.image;
@@ -114,26 +180,37 @@ export async function runPipeline(
   const result: CampaignResult = {
     mode: provider,
     model: provider === "demo" ? null : MODEL_LABELS[provider],
-    skuId: provider === "demo" ? demoBundles[input.locale].skuId : liveSkuId(input.image.bytes),
+    skuId: provider === "demo" ? demoBundles[input.locale].skuId : liveSkuId(combinedBytes(images.map((i) => i.bytes))),
     locale: input.locale,
-    format: input.format,
+    placements: input.placements,
     creativeStrategy: spark.creativeStrategy,
     planReview: planned.planReview,
-    carouselSlides: input.format === "carousel" || spark.creativeStrategy.carouselRecommended ? spark.carouselSlides : null,
+    copyReview: finalCopyReview,
+    carouselSlides: input.placements.includes("carousel") ? spark.carouselSlides : null,
     carouselImages: image.carouselImages,
     carouselErrors: image.carouselErrors,
     reviewRequired: true,
     listing: spark.listing,
-    adVariants: spark.adVariants,
+    feedVariants: spark.feedVariants,
+    story: spark.story,
     audiences: spark.audiences,
     imageAssets,
     segmentation: sam.segmentation,
-    designData: sam.designData,
+    designData,
+    background,
+    productCount,
     flyerTexts: spark.flyerTexts,
     studioScenes: image.scenes,
-    posterImages: image.posters,
-    posterErrors: image.errors,
-    visualReviews: quality.visualReviews,
+    feedImages: image.feed,
+    feedErrors: image.feedErrors,
+    storyImage: image.storyImage,
+    storyError: image.storyError,
+    feedReviews: quality.feedReviews,
+    storyReview: quality.storyReview,
+    artworkDims: quality.artworkDims,
+    merchant: input.merchant,
+    legalDisclaimer: spark.legalDisclaimer,
+    allowedClaims: spark.allowedClaims,
     carouselReviews: quality.carouselReviews,
     diversityReview: quality.diversityReview,
     timings: {
@@ -149,12 +226,6 @@ export async function runPipeline(
   return campaignResultSchema.parse(result);
 }
 
-function tuple3<T>(list: T[], fallback: T): [T, T, T] {
-  const padded = [...list];
-  while (padded.length < 3) padded.push(fallback);
-  return [padded[0], padded[1], padded[2]];
-}
-
 function liveSkuId(bytes: ArrayBuffer): string {
   const fingerprint = createHash("sha256")
     .update(new Uint8Array(bytes))
@@ -162,4 +233,31 @@ function liveSkuId(bytes: ArrayBuffer): string {
     .slice(0, 10)
     .toUpperCase();
   return `AFG-${fingerprint}`;
+}
+
+function combinedBytes(parts: ArrayBuffer[]): ArrayBuffer {
+  const total = parts.reduce((n, p) => n + p.byteLength, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(new Uint8Array(p), offset);
+    offset += p.byteLength;
+  }
+  return out.buffer;
+}
+
+function pickBackground(items: Array<{ mode: "solid" | "gradient" | "scene"; colorHex: string | null; reason: string }>) {
+  if (items.length === 0) return { mode: "scene" as const, colorHex: null, reason: "Escena completa por defecto." };
+  // Bundle: el sólido exige unanimidad; con una sola escena, la escena gana.
+  if (items.length > 1 && !items.every((b) => b.mode === "solid")) {
+    const scene = items.find((b) => b.mode === "scene");
+    if (scene) return scene;
+    const gradient = items.find((b) => b.mode === "gradient");
+    if (gradient) return gradient;
+  }
+  const solid = items.find((b) => b.mode === "solid");
+  if (solid) return solid;
+  const gradient = items.find((b) => b.mode === "gradient");
+  if (gradient) return gradient;
+  return items[0] ?? { mode: "scene" as const, colorHex: null, reason: "Escena completa por defecto." };
 }

@@ -25,13 +25,19 @@ const CUTOUT_MODES: Array<{ id: CutoutMode; label: string }> = [
 
 export function ResultsTabs({
   result,
+  previewUrls,
   previewUrl,
 }: {
   result: CampaignResult | null;
-  previewUrl: string | null;
+  previewUrls?: string[];
+  /** Compat con llamadas viejas de un solo preview. */
+  previewUrl?: string | null;
 }) {
   const [tab, setTab] = useState<TabId>("visual");
   const [cutoutMode, setCutoutMode] = useState<CutoutMode>("auto");
+
+  const urls = previewUrls ?? (previewUrl ? [previewUrl] : []);
+  const firstUrl = urls[0] ?? null;
 
   return (
     <div className="flex h-full flex-col rounded-xl border border-night-rule bg-night-panel">
@@ -53,7 +59,7 @@ export function ResultsTabs({
           </button>
         ))}
       </nav>
-      {result && tab !== "json" && result.posterImages.some((p) => !p) && (
+      {result && tab !== "json" && [...result.feedImages, result.storyImage].some((p) => !p) && (
         <div className="flex items-center justify-between gap-3 border-b border-night-rule px-4 py-2">
           <span className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">
             Recorte del producto · variantes locales
@@ -76,8 +82,8 @@ export function ResultsTabs({
         </div>
       )}
       <div className="flex-1 overflow-auto p-5">
-        {tab === "visual" && <VisualStudyTab result={result} previewUrl={previewUrl} cutoutMode={cutoutMode} />}
-        {tab === "ads" && <MetaAdsTab result={result} previewUrl={previewUrl} cutoutMode={cutoutMode} />}
+        {tab === "visual" && <VisualStudyTab result={result} previewUrl={firstUrl} previewUrls={urls} cutoutMode={cutoutMode} />}
+        {tab === "ads" && <MetaAdsTab result={result} previewUrl={firstUrl} cutoutMode={cutoutMode} />}
         {tab === "json" && <StorefrontJsonTab result={result} />}
       </div>
     </div>

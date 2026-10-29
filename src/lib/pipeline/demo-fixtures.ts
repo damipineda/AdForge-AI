@@ -21,8 +21,7 @@ type DemoBundle = {
     };
     missingInformation: string[];
   };
-  adVariants: Array<{
-    platform: "instagram" | "facebook";
+  feedVariants: Array<{
     concept: string;
     artDirection: string;
     styleArchetype: StyleArchetype;
@@ -31,7 +30,15 @@ type DemoBundle = {
     cta: string;
     imageUrl: string;
     featurePills?: string[];
+    captionInstagram: string;
+    captionFacebook: string;
   }>;
+  story: {
+    concept: string;
+    artDirection: string;
+    hook: string;
+    cta: string;
+  };
   audiences: Array<{
     name: string;
     interests: string[];
@@ -71,20 +78,20 @@ export const demoBundles: Record<Locale, DemoBundle> = {
         "Confirmar precio final en GS y color stock antes de publicar.",
       ],
     },
-    adVariants: [
+    feedVariants: [
       {
-        platform: "instagram",
         concept: "Ritual premium",
-        artDirection: "Superficie marfil limpia estilo portada de revista, producto peque�o integrado abajo a la derecha, luz lateral suave y aire de tipograf�a arriba.",
+        artDirection: "Superficie marfil limpia estilo portada de revista, producto pequeño integrado abajo a la derecha, luz lateral suave y aire de tipografía arriba.",
         styleArchetype: "editorial-poster",
         hook: "12 h caliente. Cero fugas.",
         body: "El termo que aguanta tu ruta completa, del amanecer en Areguá al último mate de la noche.",
         cta: "Comprar ahora",
         imageUrl: "/demo/studio-1.svg",
         featurePills: ["12 h caliente", "24 h frío", "Cero fugas"],
+        captionInstagram: "12 h caliente. Cero fugas. El Termo Andes 750 ml, del primer mate al último. #termo #mate #outdoor",
+        captionFacebook: "Termo Andes 750 ml: 12 h caliente, 24 h frío y tapa antiderrame. Escribinos para conocer colores disponibles.",
       },
       {
-        platform: "facebook",
         concept: "La mochila sin derrames",
         artDirection: "Split 50/50: foto protagonista a la derecha sobre superficie clara, panel de degradado a la izquierda con espacio para beneficios.",
         styleArchetype: "split-commerce",
@@ -93,19 +100,16 @@ export const demoBundles: Record<Locale, DemoBundle> = {
         cta: "Ver detalles",
         imageUrl: "/demo/studio-2.svg",
         featurePills: ["Pared doble", "Tapa con seguro", "Base antideslizante"],
-      },
-      {
-        platform: "instagram",
-        concept: "De escritorio a aventura",
-        artDirection: "Fondo azul noche, producto centrado con halo de luz del acento, sello flotante de oferta y franja superior limpia.",
-        styleArchetype: "bold-dark",
-        hook: "Tu escritorio, versión aventura",
-        body: "750 ml de acero que sobrevive al mate, al gym y a la mochila. Colores limitados.",
-        cta: "Elegir color",
-        imageUrl: "/demo/studio-3.svg",
-        featurePills: ["750 ml acero", "Apto lavavajillas", "Libre de BPA"],
+        captionInstagram: "Mate sin sorpresas. Pared doble y tapa con seguro. #mate #termoacero #camping",
+        captionFacebook: "¿Derrames en la mochila? Nunca más: pared doble de acero, tapa con seguro y garantía de 12 meses.",
       },
     ],
+    story: {
+      concept: "De escritorio a aventura",
+      artDirection: "Composición vertical 9:16: producto en el tercio medio sobre fondo cálido con luz lateral, titular grande arriba y botón CTA abajo con aire libre en los extremos.",
+      hook: "Tu escritorio, versión aventura",
+      cta: "Elegir color",
+    },
     audiences: [
       {
         name: "Yerba mate ritual",
@@ -160,20 +164,20 @@ export const demoBundles: Record<Locale, DemoBundle> = {
         "Confirmar preço final e cores disponíveis antes de publicar.",
       ],
     },
-    adVariants: [
+    feedVariants: [
       {
-        platform: "instagram",
         concept: "Ritual premium",
-        artDirection: "Superfício marfim limpa estilo capa de revista, produto pequeno integrado abaixo à direita, luz lateral suave e respiro tipográfico.",
+        artDirection: "Superfície marfim limpa estilo capa de revista, produto pequeno integrado abaixo à direita, luz lateral suave e respiro tipográfico.",
         styleArchetype: "editorial-poster",
         hook: "12 h quente. Zero vazamento.",
         body: "A garrafa que acompanha a rota inteira, do chimarrão da manhã à trilha do fim de semana.",
         cta: "Comprar agora",
         imageUrl: "/demo/studio-1.svg",
         featurePills: ["12 h quente", "24 h gelada", "Zero vazamento"],
+        captionInstagram: "12 h quente. Zero vazamento. A Andes 750 ml do chimarrão à trilha. #garrafatermica #chimarrao #trilha",
+        captionFacebook: "Garrafa Andes 750 ml: 12 h quente, 24 h gelada e tampa antivazamento. Chama no direct para cores disponíveis.",
       },
       {
-        platform: "facebook",
         concept: "Mochila sem vazamentos",
         artDirection: "Split 50/50: foto protagonista à direita sobre superfície clara, painel de gradiente à esquerda com espaço para benefícios.",
         styleArchetype: "split-commerce",
@@ -181,18 +185,16 @@ export const demoBundles: Record<Locale, DemoBundle> = {
         body: "Parede dupla, tampa com trava e base que não escorrega. Garantia de 12 meses.",
         cta: "Ver detalhes",
         imageUrl: "/demo/studio-2.svg",
-      },
-      {
-        platform: "instagram",
-        concept: "Da mesa para a trilha",
-        artDirection: "Fundo azul-noite, produto centralizado com halo de luz do acento, selo flutuante de oferta e faixa superior limpa.",
-        styleArchetype: "bold-dark",
-        hook: "Sua mesa, versão trilha",
-        body: "750 ml de inox que sobrevive ao chimarrão, à academia e à mochila. Cores limitadas.",
-        cta: "Escolher cor",
-        imageUrl: "/demo/studio-3.svg",
+        captionInstagram: "Chimarrão sem sustos. Parede dupla e tampa com trava. #chimarrao #termico #camping",
+        captionFacebook: "Vazamento na mochila? Nunca mais: parede dupla em inox, tampa com trava e garantia de 12 meses.",
       },
     ],
+    story: {
+      concept: "Da mesa para a trilha",
+      artDirection: "Composição vertical 9:16: produto no terço médio sobre fundo quente com luz lateral, título grande acima e botão de CTA abaixo com respiro nas extremidades.",
+      hook: "Sua mesa, versão trilha",
+      cta: "Escolher cor",
+    },
     audiences: [
       {
         name: "Ritual do chimarrão",
@@ -247,9 +249,8 @@ export const demoBundles: Record<Locale, DemoBundle> = {
         "Confirm final USD price and color stock before publishing.",
       ],
     },
-    adVariants: [
+    feedVariants: [
       {
-        platform: "instagram",
         concept: "Premium daily ritual",
         artDirection: "Clean ivory magazine-cover surface, bottle small and elegantly integrated bottom-right, soft side light, generous negative space for type.",
         styleArchetype: "editorial-poster",
@@ -257,9 +258,10 @@ export const demoBundles: Record<Locale, DemoBundle> = {
         body: "The bottle that survives your full route, sunrise hike to last cup at home.",
         cta: "Shop now",
         imageUrl: "/demo/studio-1.svg",
+        captionInstagram: "12 h hot. Zero leaks. The Andes 750 ml, sunrise hike to last cup. #insulatedbottle #outdoors #gift",
+        captionFacebook: "Andes 750 ml steel bottle: 12 h hot, 24 h cold, leak-proof cap. Message us for available colors.",
       },
       {
-        platform: "facebook",
         concept: "A leak-free commute",
         artDirection: "50/50 split: hero photo on the right over a clean surface, gradient paint panel on the left with room for benefits and a big CTA.",
         styleArchetype: "split-commerce",
@@ -267,18 +269,16 @@ export const demoBundles: Record<Locale, DemoBundle> = {
         body: "Double-wall steel, locking lid, base that stays put. 12-month warranty.",
         cta: "See details",
         imageUrl: "/demo/studio-2.svg",
-      },
-      {
-        platform: "instagram",
-        concept: "Desk to trail",
-        artDirection: "Deep night-blue background, glowing accent halo around the centered product, floating offer seal, clean top band for the headline.",
-        styleArchetype: "bold-dark",
-        hook: "Your desk, adventure edition",
-        body: "750 ml of steel that outlives the gym, the trail, and the commute.",
-        cta: "Pick a color",
-        imageUrl: "/demo/studio-3.svg",
+        captionInstagram: "Coffee without surprises. Double-wall steel, locking lid. #coffee #commute #thermos",
+        captionFacebook: "Leaks in your bag? Never again: double-wall steel, locking lid and 12-month warranty.",
       },
     ],
+    story: {
+      concept: "Desk to trail",
+      artDirection: "Native vertical 9:16 layout: product in the middle third over a warm backdrop with side light, big headline on top and CTA button below with clear space at both ends.",
+      hook: "Your desk, adventure edition",
+      cta: "Pick a color",
+    },
     audiences: [
       {
         name: "Morning ritual",
