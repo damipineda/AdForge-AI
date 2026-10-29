@@ -24,7 +24,7 @@
  *   404. La pasada de visión la hace `muse-spark-1.3`, que sí acepta
  *   `input_image` y devuelve el bounding box normalizado.
  *
- * Una sola key (`MUSE_IMAGE_API_KEY`) habilita los tres modelos.
+ * Una sola key (`MUSE_IMAGE_API_KEY`) configura el acceso a Muse Spark y Muse Image.
  */
 
 import type { GeneratedImage, ImageInput } from "./image";
@@ -61,11 +61,15 @@ export function metaAvailable(): boolean {
 }
 
 export function metaTextModel(): string {
-  return (process.env.MUSE_SPARK_MODEL ?? DEFAULT_SPARK_MODEL).trim() || DEFAULT_SPARK_MODEL;
+  const model = (process.env.MUSE_SPARK_MODEL ?? DEFAULT_SPARK_MODEL).trim() || DEFAULT_SPARK_MODEL;
+  if (!/^muse-spark-[a-z0-9][a-z0-9.-]*$/i.test(model)) throw new Error("MUSE_SPARK_MODEL debe identificar un modelo Muse Spark.");
+  return model;
 }
 
 export function metaImageModel(): string {
-  return (process.env.MUSE_IMAGE_MODEL ?? DEFAULT_IMAGE_MODEL).trim() || DEFAULT_IMAGE_MODEL;
+  const model = (process.env.MUSE_IMAGE_MODEL ?? DEFAULT_IMAGE_MODEL).trim() || DEFAULT_IMAGE_MODEL;
+  if (!/^muse-image-[a-z0-9][a-z0-9.-]*$/i.test(model)) throw new Error("MUSE_IMAGE_MODEL debe identificar un modelo Muse Image.");
+  return model;
 }
 
 /** Tamaño pedido para feed 4:5 y carrusel. `MUSE_IMAGE_SIZE` legado vale para ambos. */

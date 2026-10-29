@@ -8,9 +8,8 @@ export type { GeneratedImage, ImageInput };
  * Router de modelos de la pipeline. Hay UN solo proveedor vivo: el Meta Model
  * API. Texto/visión → `muse-spark-1.3` vía `/v1/responses`; las piezas
  * (feed, story, carrusel) → `muse-image-1.0` vía `/v1/images/edits` (img2img
- * fuera del camino: si
- * hace falta reactivar uno, se agrega acá y en `getProvider()`, no en las
- * etapas, que siempre llaman a `llmJson`/`llmImage`.
+ * con la foto real del usuario). Meta Model API es el único proveedor de
+ * inferencia integrado; las etapas llaman a `llmJson`/`llmImage`.
  *
  * La corrida sin llave (`AI_PROVIDER=demo`) no pasa por este módulo: cada etapa
  * despacha sus fixtures locales antes de llamar al router.
