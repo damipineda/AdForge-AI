@@ -15,9 +15,14 @@ A seller may have a product photo but lack the time or design resources to creat
 - Accepts up to four JPEG, PNG or WebP photos (8 MB each), with Spanish, Portuguese or English output.
 - Plans a campaign from the observed product and creates two feed directions, with separate Instagram and Facebook captions. A vertical story is selected by default; a four-slide carousel can also be requested.
 - Generates feed (4:5), story (9:16) and carousel (4:5) artwork, and supports PNG downloads. A Reel here is **not** generated video.
-- Reviews the proposed art direction and copy; a visual reviewer inspects generated pieces and compares their compositions. It can attempt up to two visual corrections per campaign and reports review failures or unresolved issues.
+- Muse Image composes the complete ad: product, scene, editorial typography, benefit pills and CTA. The frontend exports at native resolution without text overlays, cropping or artificial background filling. When a brand kit is configured, its uploaded logo is composited separately onto the exported canvas.
+- Each saved feed/story card supports a targeted AI refinement. Muse Spark updates its brief/copy, Muse Image edits that piece using the prior art and all source photos, and the visual agent audits it before replacement. A rejected edit gets one corrective generation with the audit feedback and the same original references, then a fresh audit. Persistent failures show the specific reason (without sensitive details) and preserve the previous version. An unavailable reviewer stops replacement without a blind regeneration. Successful revisions keep their instruction, retry count and audit in campaign history.
+- Saved pieces with unresolved image errors offer a one-click automatic correction using their full audit findings, without requiring a written instruction. Campaign diversity preferences (including similar CTA buttons) and external-caption observations do not disable an otherwise usable image's download. Real image failures and privacy findings remain independent per piece.
+- A fresh-version action generates a new composition from original source photos, without using the previous failed art as the visual reference. After two failed corrections the automatic action uses this mode as well. The version history links both old and new artwork. A new generation with unresolved non-privacy findings is saved as an explicitly audited draft; unavailable audits and privacy failures still preserve the active version. Fresh generation requires linked original photos.
+- Reviews the proposed art direction and copy; a visual reviewer inspects generated pieces and compares their compositions. Only critical findings, privacy issues or failed checks trigger automatic image corrections; minor warnings stay in the report. Each affected piece can receive up to two corrective generations, with at most two pieces correcting concurrently and a shared four-minute review budget. Unaffected images retain their original pixels. Progress names the piece and attempt. The per-piece report separates requested corrections, verified improvements and pending issues. Critical issues or failed checks mark the card as a draft and disable its PNG download until refinement resolves them. Existing saved campaigns are not automatically regenerated.
 - Provides proposed audience segments, a Shopify-shaped product JSON and a Meta Catalog CSV for review. These are drafts, **not verified imports**: the user must supply or verify real product data and publicly accessible image URLs.
 - Stores projects, campaigns, image assets and review signals locally in SQLite and `data/files/`. Basic rule candidates are derived from repeated review signals; they are not proof that an ad will perform well.
+- Provides Spanish/English interface controls, an interactive platform tour, a project brand kit and local Meta API key settings. Keys entered in the UI are stored in the local SQLite database, never returned in full by the settings API; keep that database private.
 - Includes a deterministic demo mode that runs without an API key, plus a live Meta mode. In demo mode visual review and image generation are not live-model results.
 
 ## Quick start
@@ -70,7 +75,7 @@ flowchart LR
 - **Muse Spark 1.3** performs vision, copywriting, campaign planning and review through Meta Model API `/v1/responses`.
 - **Muse Image 1.0** produces artwork using the photo as an image-edit reference through `/v1/images/edits`.
 - The internal stage named `sam` currently uses **Muse Spark vision and an approximate bounding box**. A working SAM 3.1 segmentation mask is not integrated. The input background may remain visible, and the generated product or packaging may change.
-- Text is rendered by the image model in live pieces, so spelling, spacing and layout are not guaranteed. The local Canvas fallback is a different rendering path, not evidence of live generation quality.
+- Muse composes the full typography and can still misspell copy or alter product labels. The visual audit reports issues, not permission to publish. Older clean-background campaigns can be converted through per-piece AI refinement; no frontend text is added. The demo Canvas fallback does not establish live generation quality.
 - Model-based reviews can miss errors or flag good work. A review status is not approval to publish. Correction attempts are bounded and can retain the earlier version when verification fails.
 
 More technical details are in [docs/muse-code-usage.md](docs/muse-code-usage.md). The API entry point is [`src/app/api/generate-campaign/route.ts`](src/app/api/generate-campaign/route.ts); the orchestration is in [`src/lib/pipeline/index.ts`](src/lib/pipeline/index.ts).
@@ -92,6 +97,10 @@ pnpm prompts:check
 pnpm review:check
 npx -y tsx scripts/copy-review-check.ts
 npx -y tsx scripts/privacy-check.ts
+npx -y tsx scripts/refinement-check.ts
+npx -y tsx scripts/download-policy-check.ts
+npx -y tsx scripts/timeout-state-check.ts
+npx -y tsx scripts/art-direction-check.ts
 ```
 
 With the application running in demo mode:
