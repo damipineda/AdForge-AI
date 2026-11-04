@@ -1,6 +1,10 @@
 # AdForge AI
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **From a product photo to a reviewable advertising campaign.**
+
+**Open-source project · MIT License · [Public source repository](https://github.com/damipineda/AdForge-AI).**
 
 AdForge AI helps small businesses turn product photographs into social-media campaign drafts: creative directions, image assets, ad copy, audience ideas, and catalog exports. It is a project for the [Meta Global AI Developer Hackathon](https://dev.meta.ai/events/global-hackathon), built around Meta Model API. Project owner: [damipineda](https://github.com/damipineda).
 
@@ -115,10 +119,28 @@ pnpm demo:check
 
 The project addresses the event's **Build for Your World** theme: using Meta models to help sellers produce campaign drafts. The public event page describes the tracks and theme; the participant portal and official rules govern the actual submission and any required disclosures. A GitHub push alone is not a hackathon submission. Verify the current requirements and submit through the organizers' portal.
 
+### Original hackathon contributions
+
+The starting point was a standard Create Next App scaffold committed on 23 October 2026 ([`cf40e9e`](https://github.com/damipineda/AdForge-AI/commit/cf40e9e)). That starter, framework dependencies and their stock assets are not claimed as original hackathon work.
+
+The AdForge implementation is recorded in commits dated 28 October–4 November 2026, during the guide's 27 October–4 November building period:
+
+- [`62d770a`](https://github.com/damipineda/AdForge-AI/commit/62d770a): product-photo campaign pipeline using Meta Model API.
+- [`4c42959`](https://github.com/damipineda/AdForge-AI/commit/4c42959) and [`727a620`](https://github.com/damipineda/AdForge-AI/commit/727a620): campaign studio and Muse-only inference configuration.
+- [`b6a186b`](https://github.com/damipineda/AdForge-AI/commit/b6a186b): integrated campaign artwork, targeted refinement and regeneration, version history, visual audit and error handling, project/brand controls, interface languages and platform tour, with focused verification scripts.
+
+The demo should highlight these implemented application features and distinguish live Muse generation from the offline demo fixtures. The supplied participant guide requires a publicly accessible repository, an accessible three-minute demo video, identification of all contributors, and submission through the CV platform.
+
 ## Español
 
 AdForge AI transforma fotos de productos en borradores de campañas para redes: dos piezas de feed, historia y carrusel opcional, con copy, audiencias sugeridas y exportaciones de catálogo. Usa Muse Spark para analizar, redactar y revisar, y Muse Image para generar las piezas. La revisión humana sigue siendo necesaria y los datos sensibles deben ocultarse antes de subir la foto.
 
+Es un proyecto **open source bajo licencia MIT**, con repositorio público. El trabajo original presentado para la hackathon está identificado arriba por funcionalidades y commits; el scaffold y las dependencias conservan sus propias atribuciones.
+
 ## License
 
-No license is currently included. All rights are reserved unless the project owner adds one.
+The original AdForge AI source code and documentation are released under the [MIT License](LICENSE), copyright 2026 damipineda. You may use, modify and redistribute them under its terms.
+
+Dependencies, stock framework assets, third-party trademarks and uploaded product/brand images retain their respective licenses and rights. Meta models and API access are governed by Meta's terms; this repository's license does not license those services or grant rights to third-party assets.
+
+`"private": true` in `package.json` prevents accidental npm publication. It does not make the GitHub repository private or change the MIT source license.
