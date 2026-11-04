@@ -8,14 +8,14 @@ import { FlyerCanvas, type FlyerCanvasHandle } from "./FlyerCanvas";
 import { GeneratedFlyerCanvas } from "./GeneratedFlyerCanvas";
 import { ReviewChecks } from "./ReviewChecks";
 import { ReviewNotes } from "./ReviewNotes";
+import { automaticCorrectionInstruction, requiresImageCorrection } from "@/lib/pipeline/review-policy";
+import { useI18n } from "@/lib/i18n";
 
 type FlyerCardProps = {
-  /** "FEED 4:5 · V1" / "STORY 9:16": placement real, no red social. */
   kicker: string;
   filename: string;
   concept: string;
   hook: string;
-  /** Apoyo largo; `null` en la story (titular + CTA). */
   body: string | null;
   cta: string;
   benefit: string;
@@ -25,16 +25,16 @@ type FlyerCardProps = {
   segmentation: Segmentation;
   designData: PhotoDesignData | null;
   previewUrl: string | null;
-  /**
-   * Arte del paso de imagen (data URL): la pieza IA completa (img2img con la
-   * foto real) que se muestra cruda, sin composición encima. `null` →
-   * composición 100% local con Canvas.
-   */
+  previewUrls?: string[];
   posterUrl: string | null;
   fallbackReason: string | null;
   review: VisualReview | null;
   story?: boolean;
   cutoutMode: CutoutMode;
+  legacyLayers?: boolean;
+  onRefine?: (instruction: string, mode?: "refine" | "regenerate") => Promise<void>;
+  logoUrl?: string | null;
+  logoPosition?: "auto" | "left" | "right" | null;
 };
 
 export const FlyerCard = memo(function FlyerCard({
@@ -51,23 +51,30 @@ export const FlyerCard = memo(function FlyerCard({
   segmentation,
   designData,
   previewUrl,
+  previewUrls,
   posterUrl,
   fallbackReason,
   review,
   story = false,
   cutoutMode,
+  legacyLayers,
+  onRefine,
+  logoUrl,
+  logoPosition,
 }: FlyerCardProps) {
+  const { t } = useI18n();
   const canvasRef = useRef<FlyerCanvasHandle>(null);
   const [copied, setCopied] = useState(false);
   const [zoomSrc, setZoomSrc] = useState<string | null>(null);
-  // A qué arte corresponde el último reporte de encuadre: si el arte cambió y
-  // el canvas aún no reportó, el badge viejo se ignora sin necesidad de efecto.
+  const [instruction, setInstruction] = useState("");
+  const [refining, setRefining] = useState(false);
+  const [refineError, setRefineError] = useState<string | null>(null);
   const [renderInfo, setRenderInfo] = useState<{ src: string | null; extended: boolean }>({ src: null, extended: false });
   const extended = renderInfo.src === posterUrl && renderInfo.extended;
-  // Rama de render (arte IA o composición local + modo): la readiness vieja
-  // de otra rama se ignora comparando, sin efectos ni loops.
-  const branchKey = posterUrl ?? `local:${cutoutMode}`;
+  const branchKey = `${posterUrl ?? `local:${cutoutMode}`}|${logoUrl ?? ""}|${logoPosition ?? "auto"}`;
   const [readyInfo, setReadyInfo] = useState<{ src: string | null; ready: boolean }>({ src: null, ready: false });
+  const [canvasErrorInfo, setCanvasErrorInfo] = useState<{ src: string; message: string } | null>(null);
+  const canvasError = canvasErrorInfo?.src === branchKey ? canvasErrorInfo.message : null;
   const ready = readyInfo.src === branchKey && readyInfo.ready;
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -78,24 +85,32 @@ export const FlyerCard = memo(function FlyerCard({
     toastTimer.current = setTimeout(() => setToast(null), 3500);
   }, []);
 
-  // Callbacks estables: si se recrearan por render, los efectos de los
-  // canvas recargarían la imagen en loop (= parpadeo).
   const handleRender = useCallback(
     (info: { extended: boolean }) => setRenderInfo({ src: posterUrl, extended: info.extended }),
     [posterUrl],
   );
   const handleReadyChange = useCallback(
-    (isReady: boolean) => setReadyInfo({ src: branchKey, ready: isReady }),
+    (isReady: boolean) => { setReadyInfo({ src: branchKey, ready: isReady }); if (isReady) setCanvasErrorInfo(null); },
     [branchKey],
   );
   const handleCanvasError = useCallback(
-    (message: string) => showToast(message),
-    [showToast],
+    (message: string) => { setCanvasErrorInfo({ src: branchKey, message }); showToast(message); },
+    [showToast, branchKey],
   );
 
   const fullCopy = body ? `${hook}\n\n${body}\n\n${cta}` : `${hook}\n\n${cta}`;
   const rawPoster = posterUrl !== null;
   const privacyBlocked = Boolean(review?.issues.some((issue) => issue.category === "privacy"));
+  const qualityBlocked = requiresImageCorrection(review);
+  const autoInstruction = automaticCorrectionInstruction(review);
+
+  const runRefinement = async (request: string, mode?: "refine" | "regenerate") => {
+    if (!onRefine || !request.trim() || refining) return;
+    setRefining(true); setRefineError(null);
+    try { await onRefine(request.trim(), mode); setInstruction(""); showToast(t.flyerCard.refinedToast); }
+    catch (error) { setRefineError(error instanceof Error ? error.message : t.flyerCard.refineErrorDefault); }
+    finally { setRefining(false); }
+  };
 
   const handleCopy = async () => {
     try {
@@ -103,30 +118,28 @@ export const FlyerCard = memo(function FlyerCard({
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {
-      /* portapapeles no disponible */
+      /* clipboard unavailable */
     }
   };
 
   const handleDownload = () => {
-    if (privacyBlocked) return;
+    if (qualityBlocked) return;
     if (!ready || !canvasRef.current?.isReady()) {
-      showToast("La imagen aún se está preparando, probá en unos segundos.");
+      showToast(t.flyerCard.preparingToast);
       return;
     }
     canvasRef.current.download(filename);
-    // Señal humana de éxito para el skill: esta pieza gustó lo suficiente
-    // como para exportarla. El Dashboard la escucha y la registra.
     window.dispatchEvent(new CustomEvent("adforge:export", { detail: { filename } }));
   };
 
   const handleZoom = () => {
     if (!ready) {
-      showToast("La imagen aún se está preparando, probá en unos segundos.");
+      showToast(t.flyerCard.preparingToast);
       return;
     }
     const png = canvasRef.current?.toPng() ?? posterUrl;
     if (png) setZoomSrc(png);
-    else showToast("No se pudo generar la vista ampliada.");
+    else showToast(t.flyerCard.zoomErrorToast);
   };
 
   return (
@@ -144,9 +157,9 @@ export const FlyerCard = memo(function FlyerCard({
           {extended && posterUrl && (
             <span
               className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-amber-300"
-              title="El proveedor devolvió otro aspecto y el export extendió el fondo con degradado para llegar al tamaño exacto"
+              title={t.flyerCard.extendedArtTitle}
             >
-              Arte extendido
+              {t.flyerCard.extendedArt}
             </span>
           )}
           <span
@@ -158,14 +171,12 @@ export const FlyerCard = memo(function FlyerCard({
             }
             title={
               posterUrl
-                ? "Pieza completa generada con IA (img2img con tu foto)"
-                : fallbackReason
-                  ? `Composición local con Canvas. Motivo: ${fallbackReason}`
-                  : "Composición local con Canvas (fallback)"
+                ? t.flyerCard.aiImageTitle
+                : t.flyerCard.localFallbackTitle(fallbackReason)
             }
           >
             {posterUrl ? <Images className="h-3 w-3" /> : <Layers className="h-3 w-3" />}
-            {posterUrl ? "Imagen IA" : "Local"}
+            {posterUrl ? t.flyerCard.aiImage : t.flyerCard.localImage}
           </span>
         </span>
       </div>
@@ -173,16 +184,10 @@ export const FlyerCard = memo(function FlyerCard({
       <div className="bg-night p-3">
         <div className="overflow-hidden rounded-lg border border-night-rule">
           {privacyBlocked ? (
-            <p className="p-6 text-sm text-amber-300" role="alert">Se detectó o no se pudo descartar información sensible. La vista y descarga están bloqueadas. Ocultá la patente en la foto original y generá nuevamente.</p>
+            <p className="p-6 text-sm text-amber-300" role="alert">{t.flyerCard.privacyBlocked}</p>
           ) : rawPoster ? (
-            <div
-              className={ready ? "cursor-zoom-in" : "cursor-wait"}
-              onClick={() => {
-                if (!zoomSrc) handleZoom();
-              }}
-              title="Ver imagen en tamaño completo"
-            >
-              <GeneratedFlyerCanvas ref={canvasRef} artworkUrl={posterUrl} targetWidth={1080} targetHeight={story ? 1920 : 1350} aspect={story ? "9 / 16" : "4 / 5"} onRender={handleRender} onReadyChange={handleReadyChange} onError={handleCanvasError} />
+            <div className={ready ? "cursor-zoom-in" : "cursor-wait"} onClick={() => { if (!zoomSrc) handleZoom(); }} title={t.flyerCard.zoomTitle}>
+              <GeneratedFlyerCanvas ref={canvasRef} artworkUrl={posterUrl} targetWidth={1080} targetHeight={story ? 1920 : 1350} aspect={story ? "9 / 16" : "4 / 5"} onRender={handleRender} onReadyChange={handleReadyChange} onError={handleCanvasError} logoUrl={logoUrl} logoPosition={logoPosition} />
             </div>
           ) : (
             <div
@@ -190,11 +195,12 @@ export const FlyerCard = memo(function FlyerCard({
               onClick={() => {
                 if (!zoomSrc) handleZoom();
               }}
-              title="Ver composición en tamaño completo"
+              title={t.flyerCard.zoomTitle}
             >
               <FlyerCanvas
                 ref={canvasRef}
                 photoUrl={previewUrl}
+                photoUrls={previewUrls}
                 segmentation={segmentation}
                 scene={scene}
                 styleArchetype={styleArchetype}
@@ -218,9 +224,25 @@ export const FlyerCard = memo(function FlyerCard({
 
       {fallbackReason ? (
         <p className="border-t border-night-rule bg-night px-3 py-2 font-mono text-[9px] leading-relaxed tracking-wider text-paper-muted">
-          ARTE IA NO GENERADO · {fallbackReason}
+          {t.flyerCard.aiArtNotGenerated} · {fallbackReason}
         </p>
       ) : null}
+
+      <form className="space-y-2 border-t border-night-rule p-3" onSubmit={async (event) => {
+        event.preventDefault(); await runRefinement(instruction);
+      }}>
+        {autoInstruction && <button type="button" disabled={refining || !onRefine} onClick={() => void runRefinement(autoInstruction, "refine")} className="rounded border border-mint/50 bg-mint-soft px-3 py-2 text-xs text-mint disabled:opacity-50">{refining ? t.flyerCard.autoFixing : t.flyerCard.autoFixBtn}</button>}
+        <button type="button" disabled={refining || !onRefine} onClick={() => void runRefinement(autoInstruction ?? t.flyerCard.regenerateDefaultPrompt, "regenerate")} className="rounded border border-mint/50 px-3 py-2 text-xs text-mint disabled:opacity-50">{t.flyerCard.regenerateBtn}</button>
+        <p className="text-[11px] text-paper-muted">{t.flyerCard.regenerateHint}</p>
+        <label className="block text-xs text-paper-dim">{t.flyerCard.refineLabel}
+          <textarea className="mt-2 w-full rounded border border-night-rule bg-night p-2 text-xs text-paper" rows={2} maxLength={800} disabled={refining || !onRefine} value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder={t.flyerCard.refinePlaceholder} />
+        </label>
+        {legacyLayers && <p className="text-xs text-paper-muted">{t.flyerCard.legacyLayersHint}</p>}
+        <button type="submit" disabled={refining || !onRefine || !instruction.trim()} className="rounded border border-mint/40 px-3 py-2 text-xs text-mint disabled:opacity-50">{refining ? t.flyerCard.refiningBtn : t.flyerCard.refineBtn}</button>
+        {refining && <p role="status" className="text-xs text-paper-muted">{t.flyerCard.refiningStatus}</p>}
+        {!onRefine && <p className="text-xs text-paper-muted">{t.flyerCard.refineDisabledHint}</p>}
+        {refineError && <p role="alert" className="text-xs text-amber-300">{refineError}</p>}
+      </form>
 
       {zoomSrc ? (
         <div
@@ -241,6 +263,8 @@ export const FlyerCard = memo(function FlyerCard({
           {concept}
         </p>
         {body ? <p className="break-words text-sm leading-relaxed text-paper-dim">{body}</p> : null}
+        {qualityBlocked && <p role="alert" className="rounded border border-amber-400/30 bg-amber-400/5 p-2 text-xs text-amber-300">{refining ? t.flyerCard.qualityBlockedFixing : t.flyerCard.qualityBlockedAlert}</p>}
+        {!qualityBlocked && review?.issues.some((issue) => issue.category === "diversity") && <p className="text-xs text-paper-muted">{t.flyerCard.diversityOptionalHint}</p>}
         <ReviewChecks review={review} />
         <ReviewNotes review={review} />
         <div className="mt-auto flex flex-wrap gap-2">
@@ -250,17 +274,26 @@ export const FlyerCard = memo(function FlyerCard({
             className="inline-flex items-center gap-1.5 rounded border border-night-rule-strong bg-night px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest text-paper-dim transition-colors hover:border-mint hover:text-mint"
           >
             {copied ? <Check className="h-3 w-3 text-mint" /> : <Copy className="h-3 w-3" />}
-            {copied ? "Copiado" : "Copiar"}
+            {copied ? t.flyerCard.copied : t.flyerCard.copy}
           </button>
           <button
             type="button"
             onClick={handleDownload}
-            disabled={!ready || privacyBlocked}
-            title={privacyBlocked ? "Revisá los datos sensibles antes de generar de nuevo" : ready ? undefined : "La imagen aún se está preparando"}
-            className="inline-flex items-center gap-1.5 rounded border border-mint/40 bg-mint-soft px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest text-mint transition-colors hover:bg-mint hover:text-ink disabled:cursor-wait disabled:opacity-50 disabled:hover:bg-mint-soft disabled:hover:text-mint"
+            disabled={!ready || qualityBlocked}
+            aria-busy={!ready && !qualityBlocked && !canvasError}
+            title={qualityBlocked ? t.flyerCard.fixBeforeDownloadTitle : canvasError ?? (ready ? undefined : t.flyerCard.preparingImage)}
+            className={`inline-flex items-center gap-1.5 rounded border border-mint/40 bg-mint-soft px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-widest text-mint transition-colors hover:bg-mint hover:text-ink disabled:opacity-50 disabled:hover:bg-mint-soft disabled:hover:text-mint ${qualityBlocked || canvasError ? "disabled:cursor-not-allowed" : "disabled:cursor-wait"}`}
           >
-            <Download className="h-3 w-3" />
-            {privacyBlocked ? "Descarga bloqueada" : ready ? `Descargar ${story ? "historia" : "feed"} PNG` : "Preparando imagen…"}
+            {qualityBlocked ? <TriangleAlert className="h-3 w-3" /> : <Download className="h-3 w-3" />}
+            {qualityBlocked
+              ? t.flyerCard.pendingCorrection
+              : canvasError
+                ? t.flyerCard.imageUnavailable
+                : ready
+                  ? story
+                    ? t.flyerCard.downloadStory
+                    : t.flyerCard.downloadFeed
+                  : t.flyerCard.preparingImage}
           </button>
         </div>
       </div>

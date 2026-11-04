@@ -4,6 +4,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import type { CampaignResult, CarouselSlide } from "@/lib/schema/campaign";
 import { loadImageElement } from "@/lib/flyer/image-loader";
 import { ReviewNotes } from "./ReviewNotes";
+import { useI18n } from "@/lib/i18n";
 
 const labels: Record<CampaignResult["locale"], string[]> = {
   es: ["Atención", "Interés", "Deseo", "Acción"],
@@ -12,9 +13,9 @@ const labels: Record<CampaignResult["locale"], string[]> = {
 };
 
 export const CarouselPreview = memo(function CarouselPreview({ result, photoUrl }: { result: CampaignResult; photoUrl: string | null }) {
+  const { t } = useI18n();
   const [active, setActive] = useState(0);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  // Clave de lámina: la readiness vieja de otra lámina se ignora comparando.
   const [readyInfo, setReadyInfo] = useState<{ key: number; ready: boolean }>({ key: -1, ready: false });
   const ready = readyInfo.key === active && readyInfo.ready;
   const slides = result.carouselSlides ?? [];
@@ -29,8 +30,6 @@ export const CarouselPreview = memo(function CarouselPreview({ result, photoUrl 
     if (!ctx) return;
     let cancelled = false;
     const key = active;
-    // Sin setState acá: mientras carga, ready ya es false por clave distinta.
-    // El await es load-bearing: exportar antes del onload sale negro.
     void loadImageElement(artwork ?? photoUrl ?? "").then(
       (image) => {
         if (cancelled) return;
@@ -39,7 +38,6 @@ export const CarouselPreview = memo(function CarouselPreview({ result, photoUrl 
           canvas.height = image.naturalHeight;
           ctx.drawImage(image, 0, 0);
         } else {
-          // Fallback local en 4:5, la misma proporción de las láminas IA.
           canvas.width = 1080;
           canvas.height = 1350;
           drawSlide(ctx, image, slide, key, result.designData?.secondaryColorHex ?? "#126644");
@@ -66,7 +64,7 @@ export const CarouselPreview = memo(function CarouselPreview({ result, photoUrl 
 
   return (
     <section className="space-y-4 rounded-xl border border-night-rule bg-night-panel p-4">
-      <div className="flex flex-wrap gap-2" aria-label="Láminas del carrusel">
+      <div className="flex flex-wrap gap-2" aria-label={t.carousel.ariaSlides}>
         {slides.map((item, i) => (
           <button key={item.stage} type="button" onClick={() => setActive(i)} aria-pressed={active === i} className={`rounded-md border px-3 py-2 text-xs ${active === i ? "border-mint bg-mint-soft text-mint" : "border-night-rule text-paper-dim"}`}>
             {i + 1} · {labels[result.locale][i]}
@@ -74,14 +72,14 @@ export const CarouselPreview = memo(function CarouselPreview({ result, photoUrl 
         ))}
       </div>
       <div className="mx-auto max-w-[450px] overflow-hidden rounded-lg">
-        {privacyBlocked && <p className="p-6 text-sm text-amber-300" role="alert">La lámina puede mostrar información sensible. Ocultá esos datos en la foto original y generá nuevamente.</p>}
+        {privacyBlocked && <p className="p-6 text-sm text-amber-300" role="alert">{t.carousel.privacyAlert}</p>}
         <canvas ref={canvasRef} role="img" aria-label={`${labels[result.locale][active]}: ${slide.headline}`} className={privacyBlocked ? "hidden" : "block h-auto w-full"} style={{ aspectRatio: "4 / 5" }} />
       </div>
       <p className="text-sm text-paper-dim">{slide.body}</p>
       {result.carouselReviews?.[active] && <ReviewNotes review={result.carouselReviews[active]} />}
-      {!artwork && <p className="text-xs text-paper-muted">Lámina local con foto original{result.carouselErrors?.[active] ? `: ${result.carouselErrors[active]}` : " (modo demo)"}.</p>}
+      {!artwork && <p className="text-xs text-paper-muted">{t.carousel.localSlideFallback}{result.carouselErrors?.[active] ? `: ${result.carouselErrors[active]}` : t.carousel.demoModeSuffix}.</p>}
       {active === 2 && <p className="text-xs text-paper-muted">{result.locale === "es" ? "Añade reseñas o testimonios verificados cuando estén disponibles." : result.locale === "pt" ? "Adicione avaliações verificadas quando disponíveis." : "Add verified reviews when available."}</p>}
-      <button type="button" onClick={download} disabled={!ready || privacyBlocked} title={privacyBlocked ? "Revisá la información sensible" : ready ? undefined : "La lámina aún se está preparando"} className="rounded border border-mint/40 bg-mint-soft px-3 py-2 text-xs text-mint disabled:cursor-wait disabled:opacity-50">{privacyBlocked ? "Descarga bloqueada" : ready ? `Descargar lámina ${active + 1} PNG` : "Preparando lámina…"}</button>
+      <button type="button" onClick={download} disabled={!ready || privacyBlocked} title={privacyBlocked ? t.carousel.privacyAlert : ready ? undefined : t.carousel.preparingSlide} className="rounded border border-mint/40 bg-mint-soft px-3 py-2 text-xs text-mint disabled:cursor-wait disabled:opacity-50">{privacyBlocked ? t.carousel.downloadBlocked : ready ? t.carousel.downloadSlide(active + 1) : t.carousel.preparingSlide}</button>
     </section>
   );
 });

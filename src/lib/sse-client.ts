@@ -1,4 +1,4 @@
-import type { CampaignResult, Placement, StageEvent } from "@/lib/schema/campaign";
+import type { BriefFocus, CampaignResult, Placement, StageEvent } from "@/lib/schema/campaign";
 
 export type SseEvent =
   | { kind: "stage"; payload: StageEvent }
@@ -16,7 +16,7 @@ export async function* streamCampaign(
   locale: "es" | "pt" | "en",
   placements: Placement[],
   merchant: MerchantInput = { price: "" },
-  opts: { groupMode?: boolean } = {},
+  opts: { groupMode?: boolean; projectId?: string | null; brief?: string; focus?: BriefFocus } = {},
   signal?: AbortSignal,
 ): AsyncGenerator<SseEvent> {
   const list = (Array.isArray(files) ? files : [files]).filter(Boolean).slice(0, 4);
@@ -30,6 +30,9 @@ export async function* streamCampaign(
   body.append("placements", placements.join(","));
   body.append("productCount", String(list.length));
   body.append("groupMode", opts.groupMode ?? list.length > 1 ? "true" : "false");
+  if (opts.projectId) body.append("projectId", opts.projectId);
+  if (opts.brief?.trim()) body.append("brief", opts.brief.trim().slice(0, 280));
+  if (opts.focus) body.append("focus", opts.focus);
   if (merchant.price.trim()) body.append("price", merchant.price.trim().slice(0, 64));
 
   const response = await fetch("/api/generate-campaign", {

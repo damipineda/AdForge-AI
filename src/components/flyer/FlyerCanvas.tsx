@@ -21,6 +21,8 @@ export type FlyerCanvasHandle = {
 
 export type FlyerCanvasProps = {
   photoUrl: string | null;
+  /** Lista opcional de fotos para flyers multi-producto (hasta 4 productos en cluster). */
+  photoUrls?: string[];
   segmentation: Segmentation;
   scene: StudioScene;
   /** Arquetipo del Motor de Estilos para esta pieza (feed: el de su dirección; story: el recomendado por visión). */
@@ -55,6 +57,8 @@ type RenderArgs = {
   W: number;
   H: number;
   pp: ProcessedPhoto | null;
+  /** Fotos procesadas para composición de grupo cuando hay 2..4 productos. */
+  pps: ProcessedPhoto[];
   /** Escenario IA pintado de fondo (cover). `null` → fondo local de siempre. */
   stage: HTMLImageElement | null;
   /** PRNG determinista por campaña (mulberry32): misma pieza en pantalla y en
@@ -108,6 +112,8 @@ export const FlyerCanvas = memo(
       isReady: () => readyRef.current,
     }));
 
+    const extraUrlsKey = JSON.stringify(props.photoUrls?.slice(0, 4) ?? []);
+
     useEffect(() => {
       const canvas = canvasRef.current;
       if (!canvas) return;
@@ -132,13 +138,22 @@ export const FlyerCanvas = memo(
         pills: props.featurePills.filter(Boolean).slice(0, 3),
       };
 
-      // Foto procesada + escenario IA cargan en paralelo; si el escenario
+      const additionalUrls = JSON.parse(extraUrlsKey) as string[];
+      const sourceUrls = additionalUrls.length ? additionalUrls : props.photoUrl ? [props.photoUrl] : [];
+
+      // Fotos procesadas + escenario IA cargan en paralelo; si el escenario
       // falla o no existe, los renderers pintan su fondo local de siempre.
       void Promise.all([
-        getProcessedPhoto(props.photoUrl, props.segmentation),
+        Promise.all(
+          sourceUrls.map((u, idx) =>
+            getProcessedPhoto(u, idx === 0 ? props.segmentation : null),
+          ),
+        ),
         loadImageEl(props.stageUrl ?? null),
-      ]).then(([pp, stage]) => {
+      ]).then(([loadedPhotos, stage]) => {
         if (cancelled || !ctx) return;
+        const pps = loadedPhotos.filter((item): item is ProcessedPhoto => item !== null);
+        const pp = pps[0] ?? null;
         // Tema derivado de los datos de diseño (visión) con fallback al
         // histograma local de la foto y, en último caso, a neutrales.
         const theme = buildStyleTheme({ designData: props.designData, palette: pp?.palette ?? null });
@@ -153,6 +168,7 @@ export const FlyerCanvas = memo(
           W,
           H,
           pp,
+          pps,
           stage,
           rand,
           theme,
@@ -175,6 +191,7 @@ export const FlyerCanvas = memo(
       };
     }, [
       props.photoUrl,
+      extraUrlsKey,
       props.stageUrl,
       props.scene,
       props.segmentation,
@@ -239,7 +256,7 @@ function makeRand(source: string): () => number {
  * inferior derecho con sombra de apoyao — sin fondo de color, sin marco — y un
  * botón RECTANGULAR fino y pequeño anclado a la base.
  */
-function renderEditorialPoster({ ctx, W, H, pp, stage, rand, theme, copy, mode, story }: RenderArgs) {
+function renderEditorialPoster({ ctx, W, H, pp, pps, stage, rand, theme, copy, mode, story }: RenderArgs) {
   const inset = W * 0.034;
   ctx.fillStyle = theme.paper;
   ctx.fillRect(0, 0, W, H);
@@ -297,22 +314,23 @@ function renderEditorialPoster({ ctx, W, H, pp, stage, rand, theme, copy, mode, 
   // campaña para que ninguna pieza repita la composición exacta.
   const productScale = 0.9 + rand() * 0.18; // 0.9–1.08
   const tilt = (rand() - 0.5) * 0.085; // ±2.4°
+  const isGroup = pps.length > 1;
   // En story la caja se achica y corre a la derecha: el CTA subido a 0.715H
-  // no debe pisar el producto dibujado.
+  // no debe pisar el producto dibujado. En modo grupo, el cluster se centra más.
   const productBox: Rect = story
     ? {
-        x: W * (0.5 + rand() * 0.03),
+        x: isGroup ? W * 0.16 : W * (0.5 + rand() * 0.03),
         y: H * (0.4 + rand() * 0.03),
-        w: W * 0.44 * productScale,
+        w: isGroup ? W * 0.68 : W * 0.44 * productScale,
         h: H * 0.26 * productScale,
       }
     : {
-        x: W * (0.33 + rand() * 0.04),
-        y: H * (0.45 + rand() * 0.05),
-        w: W * 0.56 * productScale,
-        h: H * 0.35 * productScale,
+        x: isGroup ? W * 0.16 : W * (0.33 + rand() * 0.04),
+        y: H * (0.44 + rand() * 0.04),
+        w: isGroup ? W * 0.68 : W * 0.56 * productScale,
+        h: H * 0.36 * productScale,
       };
-  drawProduct(ctx, pp, mode, productBox, { shadow: "floor", rotation: tilt });
+  drawProductOrGroup(ctx, pps.length ? pps : pp ? [pp] : [], mode, productBox, { shadow: "floor", rotation: tilt });
 
   // Banda base: regla + botón rectangular fino + beneficio.
   // En story sube por encima del 22% inferior (safe zone de Meta).
@@ -444,7 +462,7 @@ function drawLuxuryHeadline(
  * plataforma de conversión: kicker, titular, 3 beneficios con check y un CTA
  * grande y visible. Tipografía toda-sans, blanca/contraste según el degradé.
  */
-function renderSplitCommerce({ ctx, W, H, pp, stage, rand, theme, copy, mode, story }: RenderArgs) {
+function renderSplitCommerce({ ctx, W, H, pp, pps, stage, rand, theme, copy, mode, story }: RenderArgs) {
   // 1. Fondo: degradé real de la foto (dominante → secundario).
   const bg = ctx.createLinearGradient(0, 0, W, H);
   bg.addColorStop(0, theme.gradientStops[0]);
@@ -520,14 +538,17 @@ function renderSplitCommerce({ ctx, W, H, pp, stage, rand, theme, copy, mode, st
   );
   ctx.stroke();
 
-  // Producto protagonista dentro de la tarjeta (escala y tilt por campaña).
+  // Producto protagonista (o cluster de productos) dentro de la tarjeta.
   const inner: Rect = {
-    x: panel.x + panel.w * 0.09,
+    x: panel.x + panel.w * 0.06,
     y: panel.y + H * 0.065,
-    w: panel.w * 0.82,
+    w: panel.w * 0.88,
     h: panel.h - H * 0.18,
   };
-  drawProduct(ctx, pp, mode, inner, { shadow: "floor", rotation: (rand() - 0.5) * 0.055 });
+  drawProductOrGroup(ctx, pps.length ? pps : pp ? [pp] : [], mode, inner, {
+    shadow: "floor",
+    rotation: (rand() - 0.5) * 0.055,
+  });
 
   // Chip de la oferta flotando sobre la foto. En story sube por encima del
   // 22% inferior (safe zone de Meta).
@@ -614,7 +635,7 @@ function renderSplitCommerce({ ctx, W, H, pp, stage, rand, theme, copy, mode, st
  * foto + anillo punteado; sello flotante (badge/oferta) en esquina; línea de
  * beneficio centrada; y CTA tipo BANNER ancho en la base.
  */
-function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode, story }: RenderArgs) {
+function renderBoldPromo({ ctx, W, H, pp, pps, stage, rand, theme, copy, mode, story }: RenderArgs) {
   // Fondo noche + baños de color diagonales muy tenues.
   ctx.fillStyle = theme.night;
   ctx.fillRect(0, 0, W, H);
@@ -669,7 +690,8 @@ function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode, story 
 
   // Producto centrado con halo + borde brillante. Escala, posición vertical y
   // tilt variados por campaña (PRNG), halo alterna acento/secundario.
-  const pScale = 0.44 + rand() * 0.16;
+  const isGroup = pps.length > 1;
+  const pScale = isGroup ? 0.68 : 0.44 + rand() * 0.16;
   const pTilt = (rand() - 0.5) * 0.12; // ±3.4°
   const pbCentered: Rect = story
     ? {
@@ -691,7 +713,7 @@ function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode, story 
 
   radial(ctx, ccx, ccy, W * 0.5, withAlpha(glow, 0.3));
   radial(ctx, ccx, pb.y + pb.h, W * 0.3, withAlpha(glow, 0.22));
-  drawProduct(ctx, pp, mode, pb, { shadow: "none", rotation: pTilt });
+  drawProductOrGroup(ctx, pps.length ? pps : pp ? [pp] : [], mode, pb, { shadow: "floor", rotation: pTilt });
 
   // Borde brillante (halo) alrededor del producto.
   ctx.save();
@@ -759,7 +781,7 @@ function renderBoldPromo({ ctx, W, H, pp, stage, rand, theme, copy, mode, story 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Composición del producto (recorte + rotación + sombra/glow)
+// Composición del producto (recorte + rotación + sombra/glow + cluster grupo)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /** Carga de imagen tolerante: `null` si no hay URL o si falla (fallback
@@ -791,6 +813,78 @@ function drawStageCover(
 
 type ProductOpts = { shadow?: "floor" | "drop" | "glow" | "none"; rotation?: number; glowColor?: string };
 
+/**
+ * Si hay 1 producto, lo dibuja como hero shot con sombra de contacto doble
+ * (oclusión ambiental + penumbra suave). Si hay 2..4 productos, arma un
+ * cluster piramidal de agencia (secundarios medio paso atrás con 18-24% de
+ * solapamiento y el producto héroe centrado al frente).
+ */
+function drawProductOrGroup(
+  ctx: CanvasRenderingContext2D,
+  pps: ProcessedPhoto[],
+  mode: CutoutMode,
+  box: Rect,
+  opts: ProductOpts,
+) {
+  if (pps.length === 0) return;
+  if (pps.length === 1) {
+    drawProduct(ctx, pps[0], mode, box, opts);
+    return;
+  }
+
+  // Cluster piramidal para 2..4 productos:
+  // pps[0] es el héroe al frente; pps[1..] van medio paso atrás flanqueándolo.
+  const items = pps.slice(0, 4);
+  const count = items.length;
+  type Slot = { idx: number; cxFactor: number; bottomLift: number; scaleW: number; scaleH: number; tilt: number };
+
+  let slots: Slot[];
+  if (count === 2) {
+    slots = [
+      { idx: 1, cxFactor: 0.64, bottomLift: 0.025, scaleW: 0.56, scaleH: 0.88, tilt: 0.018 },
+      { idx: 0, cxFactor: 0.38, bottomLift: 0.0, scaleW: 0.62, scaleH: 0.95, tilt: -0.012 },
+    ];
+  } else if (count === 3) {
+    slots = [
+      { idx: 1, cxFactor: 0.24, bottomLift: 0.03, scaleW: 0.46, scaleH: 0.86, tilt: -0.018 },
+      { idx: 2, cxFactor: 0.76, bottomLift: 0.03, scaleW: 0.46, scaleH: 0.86, tilt: 0.018 },
+      { idx: 0, cxFactor: 0.50, bottomLift: 0.0, scaleW: 0.54, scaleH: 0.95, tilt: 0 },
+    ];
+  } else {
+    slots = [
+      { idx: 3, cxFactor: 0.82, bottomLift: 0.035, scaleW: 0.38, scaleH: 0.84, tilt: 0.018 },
+      { idx: 1, cxFactor: 0.19, bottomLift: 0.028, scaleW: 0.42, scaleH: 0.88, tilt: -0.015 },
+      { idx: 2, cxFactor: 0.62, bottomLift: 0.015, scaleW: 0.44, scaleH: 0.91, tilt: 0.01 },
+      { idx: 0, cxFactor: 0.39, bottomLift: 0.0, scaleW: 0.48, scaleH: 0.96, tilt: -0.008 },
+    ];
+  }
+
+  // Sombra unificadora del grupo sobre el plano de apoyo
+  if (opts.shadow === "floor") {
+    ctx.save();
+    ctx.filter = "blur(14px)";
+    ctx.fillStyle = "rgba(0,0,0,0.24)";
+    ctx.beginPath();
+    ctx.ellipse(box.x + box.w * 0.5, box.y + box.h * 0.96, box.w * 0.44, box.h * 0.055, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  for (const s of slots) {
+    const item = items[s.idx];
+    if (!item) continue;
+    const sw = box.w * s.scaleW;
+    const sh = box.h * s.scaleH;
+    const sx = box.x + box.w * s.cxFactor - sw / 2;
+    const sy = box.y + box.h * (1 - s.bottomLift) - sh;
+    drawProduct(ctx, item, mode, { x: sx, y: sy, w: sw, h: sh }, {
+      shadow: opts.shadow,
+      rotation: s.tilt,
+      glowColor: opts.glowColor,
+    });
+  }
+}
+
 function drawProduct(ctx: CanvasRenderingContext2D, pp: ProcessedPhoto | null, mode: CutoutMode, box: Rect, opts: ProductOpts) {
   if (!pp) return;
   const full = { x: 0, y: 0, w: pp.cutout.width, h: pp.cutout.height };
@@ -820,11 +914,17 @@ function drawProduct(ctx: CanvasRenderingContext2D, pp: ProcessedPhoto | null, m
   if (!layer) return;
 
   if (opts.shadow === "floor") {
+    // Penumbra amplia de apoyo + núcleo denso de oclusión ambiental bajo la base
     ctx.save();
-    ctx.filter = "blur(7px)";
-    ctx.fillStyle = "rgba(0,0,0,0.34)";
+    ctx.filter = "blur(9px)";
+    ctx.fillStyle = "rgba(0,0,0,0.28)";
     ctx.beginPath();
-    ctx.ellipse(cx, dy + dh + 4, dw * 0.4, dh * 0.05, 0, 0, Math.PI * 2);
+    ctx.ellipse(cx, dy + dh + 4, dw * 0.42, dh * 0.052, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.filter = "blur(3px)";
+    ctx.fillStyle = "rgba(0,0,0,0.46)";
+    ctx.beginPath();
+    ctx.ellipse(cx, dy + dh + 1, dw * 0.27, dh * 0.024, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
   }
@@ -848,6 +948,11 @@ function drawProduct(ctx: CanvasRenderingContext2D, pp: ProcessedPhoto | null, m
     ctx.shadowBlur = 28;
     ctx.shadowOffsetX = 14;
     ctx.shadowOffsetY = 18;
+  } else if (opts.shadow === "floor") {
+    // Separación sutil de profundidad entre productos solapados y el fondo
+    ctx.shadowColor = "rgba(0,0,0,0.22)";
+    ctx.shadowBlur = 16;
+    ctx.shadowOffsetY = 6;
   }
   ctx.drawImage(layer, dx, dy);
   ctx.restore();

@@ -12,6 +12,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     prompt: row.prompt,
     status: row.status,
     createdAt: row.createdAt,
+    brief: row.brief,
+    focus: row.focus,
   }));
   return Response.json({ campaigns }, { headers: { "Cache-Control": "no-store" } });
 }

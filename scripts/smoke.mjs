@@ -35,9 +35,12 @@ if (error) {
   console.error("Pipeline devolvió error:", error.data);
   process.exit(1);
 }
-if (stages.length !== 8) {
-  console.error(`Esperaba 8 eventos de stage, recibí ${stages.length}.`);
-  process.exit(1);
+for (const stage of ["sam", "museSpark", "museImage", "review"]) {
+  const updates = stages.filter(event => event.data.stage === stage);
+  if (!updates.some(event => event.data.status === "running") || updates.at(-1)?.data.status !== "done") {
+    console.error(`La etapa ${stage} no informó inicio y finalización correctos.`);
+    process.exit(1);
+  }
 }
 if (!result) {
   console.error("No llegó evento `result`.");

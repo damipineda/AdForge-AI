@@ -8,7 +8,8 @@ const MIME_EXT: Record<string, string> = {
 };
 
 function filesRoot(): string {
-  const dir = path.join(process.cwd(), "data", "files");
+  const root = process.env.ADFORGE_DATA_DIR ? path.resolve(process.env.ADFORGE_DATA_DIR) : path.join(process.cwd(), "data");
+  const dir = path.join(root, "files");
   mkdirSync(dir, { recursive: true });
   return dir;
 }

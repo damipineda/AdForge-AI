@@ -28,6 +28,7 @@
  */
 
 import type { GeneratedImage, ImageInput } from "./image";
+import { getSetting } from "../store/db";
 
 const BASE = "https://api.meta.ai/v1";
 const DEFAULT_SPARK_MODEL = "muse-spark-1.3";
@@ -40,24 +41,33 @@ const DEFAULT_IMAGE_MODEL = "muse-image-1.0";
 const DEFAULT_FEED_SIZE = "1080x1350";
 const DEFAULT_STORY_SIZE = "1080x1920";
 
-/** Los pasos de razonamiento de muse-spark-1.3 son largos (576 tokens en la
- * prueba para 3 hooks). 90s deja margen sin colgar la corrida. */
-const TEXT_TIMEOUT_MS = Number(process.env.META_TEXT_TIMEOUT_MS ?? 90_000) || 90_000;
+/** Los pasos de razonamiento de muse-spark-1.3 son largos (576+ tokens de cadena
+ * de pensamiento antes de emitir JSON). Presupuesto total de 240s repartido en
+ * hasta 2 intentos para que un worker colgado en el intento 1 reintente en una
+ * conexión nueva en vez de agotar todo el reloj y fallar sin reintentar. */
+const TEXT_TIMEOUT_MS = Number(process.env.META_TEXT_TIMEOUT_MS ?? 240_000) || 240_000;
 /** `/images/edits` tardó 18-25s por flyer en la prueba. */
-const IMAGE_TIMEOUT_MS = Number(process.env.META_IMAGE_TIMEOUT_MS ?? 120_000) || 120_000;
+const IMAGE_TIMEOUT_MS = Number(process.env.META_IMAGE_TIMEOUT_MS ?? 150_000) || 150_000;
+
+function resolveMetaKey(): string {
+  const envKey = process.env.MUSE_IMAGE_API_KEY?.trim() ?? "";
+  if (envKey === "isolated-test-placeholder") return envKey;
+  const saved = getSetting("MUSE_IMAGE_API_KEY")?.trim() ?? "";
+  return saved || envKey;
+}
 
 export function metaApiKey(): string {
-  const key = process.env.MUSE_IMAGE_API_KEY?.trim();
+  const key = resolveMetaKey();
   if (!key) {
     throw new Error(
-      "MUSE_IMAGE_API_KEY no está definida. Es la llave del Meta Model API del hackathon; habilita muse-spark y muse-image.",
+      "MUSE_IMAGE_API_KEY no está definida. Configurala desde el botón «Meta API Key» en la barra superior o en el panel derecho.",
     );
   }
   return key;
 }
 
 export function metaAvailable(): boolean {
-  return Boolean(process.env.MUSE_IMAGE_API_KEY?.trim());
+  return Boolean(resolveMetaKey());
 }
 
 export function metaTextModel(): string {
@@ -83,21 +93,17 @@ export function feedImageSize(): string {
 
 /** Tamaño pedido para la story 9:16 nativa. */
 export function storyImageSize(): string {
-  return (
-    process.env.MUSE_IMAGE_SIZE_STORY?.trim() ||
-    process.env.MUSE_IMAGE_SIZE?.trim() ||
-    DEFAULT_STORY_SIZE
-  );
+  // A legacy feed size must never leak into the story placement.
+  const size = process.env.MUSE_IMAGE_SIZE_STORY?.trim();
+  if (!size) return DEFAULT_STORY_SIZE;
+  const dims = /^(\d+)x(\d+)$/.exec(size);
+  if (dims && Math.abs(Number(dims[1]) / Number(dims[2]) / (9 / 16) - 1) <= .04) return size;
+  console.warn("MUSE_IMAGE_SIZE_STORY no es 9:16; se usa el tamaño nativo de Story.");
+  return DEFAULT_STORY_SIZE;
 }
 
 function authHeaders(): Record<string, string> {
   return { Authorization: `Bearer ${metaApiKey()}` };
-}
-
-/** Combina la señal del caller con el presupuesto propio de la llamada. */
-function timedSignal(caller: AbortSignal | undefined, timeoutMs: number): AbortSignal {
-  const timeout = AbortSignal.timeout(timeoutMs);
-  return caller ? AbortSignal.any([caller, timeout]) : timeout;
 }
 
 /** Error legible para el badge de fallback del cliente. */
@@ -106,35 +112,70 @@ function apiError(model: string, status: number, body: string): Error {
   return new Error(`Meta ${model} → HTTP ${status}: ${message}`);
 }
 
-/** Un reintento ante HTTP 5xx o red caída (nunca ante abort, timeout ni
- * 4xx): un 500 aislado no debería mandar la pieza al fallback local. El
- * presupuesto total de timeout se comparte entre ambos intentos. */
+export class MetaTimeoutError extends Error {
+  constructor(model: string, timeoutMs: number) {
+    super(`Meta ${model} no respondió dentro de ${Math.round(timeoutMs / 1000)} segundos. Podés reintentar; se conservan tus fotos y el brief.`);
+    this.name = "MetaTimeoutError";
+  }
+}
+
+/** Presupuesto total repartido en hasta 2 intentos: si el primer intento cae en
+ * un worker lento/colgado de Meta y supera su ventana individual (~56% del
+ * presupuesto), se corta ese socket y se lanza el segundo intento en una
+ * conexión limpia con el tiempo restante. */
 async function postMeta(
   url: string,
   init: RequestInit,
+  caller: AbortSignal | undefined,
   model: string,
   timeoutMs: number,
 ): Promise<{ ok: boolean; status: number; raw: string }> {
+  const budget = AbortSignal.timeout(timeoutMs);
+  const baseSignal = caller ? AbortSignal.any([caller, budget]) : budget;
+  const startedAt = Date.now();
   let lastErr: unknown = null;
   for (let attempt = 0; attempt < 2; attempt++) {
-    if (attempt > 0) await sleep(1500);
+    const elapsed = Date.now() - startedAt;
+    const remaining = Math.max(1, timeoutMs - elapsed);
+    const attemptTimeoutMs = attempt === 0 && timeoutMs >= 90_000
+      ? Math.max(65_000, Math.round(timeoutMs * 0.56))
+      : remaining;
+    const attemptBudget = AbortSignal.timeout(attemptTimeoutMs);
+    const signal = AbortSignal.any([baseSignal, attemptBudget]);
     try {
-      const res = await fetch(url, init);
-      const raw = await res.text().catch(() => "");
-      if (res.status >= 500 && attempt === 0) continue;
+      baseSignal.throwIfAborted();
+      if (attempt > 0) await sleep(1200, baseSignal);
+      baseSignal.throwIfAborted();
+      const res = await fetch(url, { ...init, signal });
+      const raw = await res.text();
+      if ((res.status >= 500 || res.status === 429) && attempt === 0) continue;
       return { ok: res.ok, status: res.status, raw };
     } catch (err: unknown) {
+      if (caller?.aborted) throw err;
+      if (budget.aborted) throw new MetaTimeoutError(model, timeoutMs);
+      // Si abortó el timeout del intento 0 pero todavía queda presupuesto total,
+      // pasamos al intento 1 en una conexión nueva.
+      if (attempt === 0 && attemptBudget.aborted && !budget.aborted) {
+        lastErr = err;
+        continue;
+      }
       if (err instanceof Error && (err.name === "AbortError" || err.name === "TimeoutError")) {
-        throw new Error(`Meta ${model}: se superó el límite de ${timeoutMs} ms.`);
+        throw new MetaTimeoutError(model, timeoutMs);
       }
       lastErr = err;
     }
   }
-  throw new Error(`Meta ${model}: red caída (${String(lastErr)}).`);
+  if (budget.aborted) throw new MetaTimeoutError(model, timeoutMs);
+  throw new Error(`Meta ${model}: no se pudo conectar después de reintentar (${String(lastErr)}).`);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const abort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, ms);
+    signal.addEventListener("abort", abort, { once: true });
+  });
 }
 
 // ── Texto / JSON ────────────────────────────────────────────────────────────
@@ -208,8 +249,8 @@ export async function metaJson<T>(
       method: "POST",
       headers: { ...authHeaders(), "Content-Type": "application/json" },
       body: JSON.stringify(body),
-      signal: timedSignal(args.signal, args.timeoutMs ?? TEXT_TIMEOUT_MS),
     },
+    args.signal,
     model,
     args.timeoutMs ?? TEXT_TIMEOUT_MS,
   );
@@ -314,8 +355,8 @@ export async function metaImageFlyer(
       method: "POST",
       headers: authHeaders(),
       body: form,
-      signal: timedSignal(opts.signal, opts.timeoutMs ?? IMAGE_TIMEOUT_MS),
     },
+    opts.signal,
     model,
     opts.timeoutMs ?? IMAGE_TIMEOUT_MS,
   );

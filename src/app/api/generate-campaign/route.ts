@@ -1,7 +1,11 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
 import { getProvider, runPipeline } from "@/lib/pipeline";
+import { getBrandKit } from "@/lib/store/db";
+import type { BrandContext } from "@/lib/pipeline/brand";
 import {
+  briefFocusSchema,
+  briefTextSchema,
   localeSchema,
   placementSchema,
   type Placement,
@@ -20,6 +24,12 @@ const payloadSchema = z.strictObject({
   price: z.string().trim().max(64).default(""),
   link: z.string().trim().max(500).default(""),
   groupMode: z.enum(["true", "false"]).default("true"),
+  /** Intención mínima del usuario (1 línea, manda sobre inferencias). */
+  brief: briefTextSchema.default(""),
+  /** Enfoque comercial elegido en la barra (opcional). */
+  focus: briefFocusSchema.optional(),
+  /** Proyecto dueño de la generación; si tiene kit de marca, el agente lo usa. */
+  projectId: z.string().trim().min(1).max(80).nullable().default(null),
 });
 
 function parsePlacements(raw: string): Placement[] | null {
@@ -83,6 +93,9 @@ export async function POST(request: NextRequest) {
     price: form.get("price") ?? undefined,
     link: form.get("link") ?? undefined,
     groupMode: form.get("groupMode") ?? undefined,
+    brief: form.get("brief") ?? undefined,
+    focus: form.get("focus") ?? undefined,
+    projectId: form.get("projectId") ?? undefined,
   });
   if (!parsed.success) {
     return errorResponse(422, "Mercado o placements no válidos.");
@@ -92,12 +105,31 @@ export async function POST(request: NextRequest) {
     return errorResponse(422, "Placements no válidos: usá feed, story y/o carousel separados por comas.");
   }
 
+  // Kit de marca del proyecto (si existe): el agente lo usa; si no, diseña libremente.
+  let brand: BrandContext | null = null;
+  if (parsed.data.projectId) {
+    const kit = getBrandKit(parsed.data.projectId);
+    if (kit && (kit.name.trim() || kit.logoAssetId)) {
+      const pos = kit.logoPosition === "left" || kit.logoPosition === "right" ? kit.logoPosition : "auto";
+      brand = {
+        name: kit.name.trim(),
+        primary: kit.primaryColor,
+        secondary: kit.secondaryColor,
+        accent: kit.accentColor,
+        hasLogo: kit.logoAssetId !== null,
+        logoPosition: pos,
+      };
+    }
+  }
+
   const buffers = await Promise.all(files.map((f) => f.arrayBuffer()));
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      let activeStage: StageEvent | null = null;
       const onStage = (event: StageEvent) => {
+        activeStage = event;
         controller.enqueue(
           encoder.encode(`event: stage\ndata: ${JSON.stringify(event)}\n\n`),
         );
@@ -117,6 +149,9 @@ export async function POST(request: NextRequest) {
               link: parsed.data.link || null,
             },
             groupMode: parsed.data.groupMode === "true",
+            brand,
+            userBrief: parsed.data.brief || undefined,
+            focus: parsed.data.focus,
           },
           { onStage },
         );
@@ -125,6 +160,10 @@ export async function POST(request: NextRequest) {
         );
       } catch (err) {
         const message = err instanceof Error ? err.message : "Pipeline falló.";
+        if (activeStage) {
+          const previous = activeStage as StageEvent;
+          onStage({ stage: previous.stage, status: "error", ms: previous.ms, detail: message.slice(0,240) });
+        }
         controller.enqueue(
           encoder.encode(`event: error\ndata: ${JSON.stringify({ message })}\n\n`),
         );

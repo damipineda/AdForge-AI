@@ -12,6 +12,8 @@ export type CampaignRow = {
   status: string;
   createdAt: number;
   resultJson: string | null;
+  brief: string;
+  focus: string;
 };
 export type AssetRow = {
   id: string;
@@ -47,11 +49,23 @@ export type SkillRuleRow = {
   createdAt: number;
   updatedAt: number;
 };
+export type BrandKitRow = {
+  id: string;
+  projectId: string;
+  name: string;
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  logoAssetId: string | null;
+  logoPosition: string;
+  createdAt: number;
+  updatedAt: number;
+};
 
 let db: DatabaseSync | null = null;
 
 function dataDir(): string {
-  const dir = path.join(process.cwd(), "data");
+  const dir = process.env.ADFORGE_DATA_DIR ? path.resolve(process.env.ADFORGE_DATA_DIR) : path.join(process.cwd(), "data");
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -74,7 +88,9 @@ export function getDb(): DatabaseSync {
       prompt TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'done',
       createdAt INTEGER NOT NULL,
-      resultJson TEXT
+      resultJson TEXT,
+      brief TEXT NOT NULL DEFAULT '',
+      focus TEXT NOT NULL DEFAULT 'product'
     );
     CREATE INDEX IF NOT EXISTS idx_campaign_project ON Campaign(projectId, createdAt DESC);
     CREATE TABLE IF NOT EXISTS Asset (
@@ -115,7 +131,38 @@ export function getDb(): DatabaseSync {
       updatedAt INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_skill_category ON SkillRule(category, status);
+    CREATE TABLE IF NOT EXISTS BrandKit (
+      id TEXT PRIMARY KEY,
+      projectId TEXT NOT NULL UNIQUE REFERENCES Project(id) ON DELETE CASCADE,
+      name TEXT NOT NULL DEFAULT '',
+      primaryColor TEXT NOT NULL DEFAULT '#8D7B6A',
+      secondaryColor TEXT NOT NULL DEFAULT '#2A2421',
+      accentColor TEXT NOT NULL DEFAULT '#8D7B6A',
+      logoAssetId TEXT REFERENCES Asset(id) ON DELETE SET NULL,
+      logoPosition TEXT NOT NULL DEFAULT 'auto',
+      createdAt INTEGER NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS AppSetting (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updatedAt INTEGER NOT NULL
+    );
   `);
+  // Migración ligera: columnas de brief/enfoque en DBs creadas antes.
+  for (const column of ["brief TEXT NOT NULL DEFAULT ''", "focus TEXT NOT NULL DEFAULT 'product'"]) {
+    try {
+      database.exec(`ALTER TABLE Campaign ADD COLUMN ${column}`);
+    } catch {
+      // La columna ya existe.
+    }
+  }
+  // Migración ligera: posición del logo en DBs creadas antes.
+  try {
+    database.exec(`ALTER TABLE BrandKit ADD COLUMN logoPosition TEXT NOT NULL DEFAULT 'auto'`);
+  } catch {
+    // La columna ya existe.
+  }
   db = database;
   return database;
 }
@@ -159,18 +206,22 @@ export function projectExists(id: string): boolean {
 
 export function listCampaigns(projectId: string): CampaignRow[] {
   return getDb()
-    .prepare("SELECT id, projectId, prompt, status, createdAt, resultJson FROM Campaign WHERE projectId = ? ORDER BY createdAt DESC")
+    .prepare("SELECT id, projectId, prompt, status, createdAt, resultJson, brief, focus FROM Campaign WHERE projectId = ? ORDER BY createdAt DESC")
     .all(projectId) as CampaignRow[];
 }
 
 export function getCampaign(id: string): CampaignRow | null {
   const row = getDb()
-    .prepare("SELECT id, projectId, prompt, status, createdAt, resultJson FROM Campaign WHERE id = ?")
+    .prepare("SELECT id, projectId, prompt, status, createdAt, resultJson, brief, focus FROM Campaign WHERE id = ?")
     .get(id) as CampaignRow | undefined;
   return row ?? null;
 }
 
-export function createCampaign(input: { projectId: string; prompt: string; status: string; resultJson: string | null }): CampaignRow {
+export function updateCampaignResult(id: string, resultJson: string): boolean {
+  return getDb().prepare("UPDATE Campaign SET resultJson = ? WHERE id = ?").run(resultJson, id).changes > 0;
+}
+
+export function createCampaign(input: { projectId: string; prompt: string; status: string; resultJson: string | null; brief?: string; focus?: string }): CampaignRow {
   const row: CampaignRow = {
     id: newId(),
     projectId: input.projectId,
@@ -178,10 +229,12 @@ export function createCampaign(input: { projectId: string; prompt: string; statu
     status: input.status,
     createdAt: Date.now(),
     resultJson: input.resultJson,
+    brief: (input.brief ?? "").slice(0, 280),
+    focus: input.focus ?? "product",
   };
   getDb()
-    .prepare("INSERT INTO Campaign (id, projectId, prompt, status, createdAt, resultJson) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(row.id, row.projectId, row.prompt, row.status, row.createdAt, row.resultJson);
+    .prepare("INSERT INTO Campaign (id, projectId, prompt, status, createdAt, resultJson, brief, focus) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(row.id, row.projectId, row.prompt, row.status, row.createdAt, row.resultJson, row.brief, row.focus);
   return row;
 }
 
@@ -217,16 +270,40 @@ export function createAsset(input: { campaignId: string | null; projectId: strin
   return row;
 }
 
-/** Enlaza fuentes sueltas (campaignId null) del proyecto a una campaña. */
+/** Enlaza fuentes del proyecto a una campaña. Si la fuente ya había quedado
+ * asociada a un intento fallido (o a una corrida previa que se reintentó con
+ * las mismas fotos), la reasigna o duplica el vínculo para que la nueva campaña
+ * siempre conserve sus fotos originales. */
 export function linkAssetsToCampaign(projectId: string, assetIds: string[], campaignId: string): number {
   if (assetIds.length === 0) return 0;
-  const placeholders = assetIds.map(() => "?").join(",");
-  const result = getDb()
-    .prepare(
-      `UPDATE Asset SET campaignId = ? WHERE projectId = ? AND campaignId IS NULL AND id IN (${placeholders})`,
-    )
-    .run(campaignId, projectId, ...assetIds);
-  return Number(result.changes);
+  const database = getDb();
+  let linked = 0;
+  for (const assetId of assetIds) {
+    const existing = database
+      .prepare("SELECT id, campaignId, projectId, type, url, metadataJson FROM Asset WHERE id = ? AND projectId = ? AND type = 'source'")
+      .get(assetId, projectId) as AssetRow | undefined;
+    if (!existing) continue;
+    if (!existing.campaignId || existing.campaignId === campaignId) {
+      database.prepare("UPDATE Asset SET campaignId = ? WHERE id = ?").run(campaignId, existing.id);
+      linked++;
+    } else {
+      // Si la campaña anterior falló, movemos el asset a la nueva; si era una campaña válida, creamos una copia del vínculo
+      const prevCampaign = getCampaign(existing.campaignId);
+      if (!prevCampaign || prevCampaign.status === "error") {
+        database.prepare("UPDATE Asset SET campaignId = ? WHERE id = ?").run(campaignId, existing.id);
+      } else {
+        createAsset({
+          campaignId,
+          projectId,
+          type: "source",
+          url: existing.url,
+          metadataJson: existing.metadataJson,
+        });
+      }
+      linked++;
+    }
+  }
+  return linked;
 }
 
 export function insertLearnings(
@@ -315,4 +392,70 @@ export function upsertSkillRule(category: string, rule: string, evidenceCount: n
     .prepare("INSERT INTO SkillRule (id, category, rule, evidenceCount, status, promotedAt, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
     .run(row.id, row.category, row.rule, row.evidenceCount, row.status, row.promotedAt, row.createdAt, row.updatedAt);
   return row;
+}
+
+export function getBrandKit(projectId: string): BrandKitRow | null {
+  const row = getDb()
+    .prepare("SELECT * FROM BrandKit WHERE projectId = ?")
+    .get(projectId) as (BrandKitRow & { logoPosition?: string | null }) | undefined;
+  if (!row) return null;
+  if (!row.logoPosition) return { ...row, logoPosition: "auto" };
+  return row as BrandKitRow;
+}
+
+export function upsertBrandKit(input: {
+  projectId: string;
+  name: string;
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  logoAssetId: string | null;
+  logoPosition?: string | null;
+}): BrandKitRow {
+  const database = getDb();
+  const now = Date.now();
+  const logoPosition = input.logoPosition === "left" || input.logoPosition === "right" ? input.logoPosition : "auto";
+  const existing = getBrandKit(input.projectId);
+  if (existing) {
+    database
+      .prepare("UPDATE BrandKit SET name = ?, primaryColor = ?, secondaryColor = ?, accentColor = ?, logoAssetId = ?, logoPosition = ?, updatedAt = ? WHERE id = ?")
+      .run(input.name, input.primaryColor, input.secondaryColor, input.accentColor, input.logoAssetId, logoPosition, now, existing.id);
+    return { ...existing, ...input, logoPosition, updatedAt: now };
+  }
+  const row: BrandKitRow = { id: newId(), ...input, logoPosition, createdAt: now, updatedAt: now };
+  database
+    .prepare("INSERT INTO BrandKit (id, projectId, name, primaryColor, secondaryColor, accentColor, logoAssetId, logoPosition, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(row.id, row.projectId, row.name, row.primaryColor, row.secondaryColor, row.accentColor, row.logoAssetId, row.logoPosition, row.createdAt, row.updatedAt);
+  return row;
+}
+
+export function getAsset(id: string): { id: string; projectId: string; url: string } | null {
+  const row = getDb()
+    .prepare("SELECT id, projectId, url FROM Asset WHERE id = ?")
+    .get(id) as { id: string; projectId: string; url: string } | undefined;
+  return row ?? null;
+}
+
+export function getSetting(key: string): string | null {
+  try {
+    const row = getDb()
+      .prepare("SELECT value FROM AppSetting WHERE key = ?")
+      .get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function setSetting(key: string, value: string): void {
+  const now = Date.now();
+  getDb()
+    .prepare(
+      "INSERT INTO AppSetting (key, value, updatedAt) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = excluded.updatedAt",
+    )
+    .run(key, value, now);
+}
+
+export function deleteSetting(key: string): void {
+  getDb().prepare("DELETE FROM AppSetting WHERE key = ?").run(key);
 }

@@ -6,20 +6,20 @@ import {
 } from "@/lib/schema/campaign";
 import { llmJson } from "./llm";
 import { metaAvailable, metaTextModel } from "./meta";
+import { getSetting } from "../store/db";
 
 export type Provider = "demo" | "meta";
 
 /**
  * Resuelve qué motor usa cada etapa. `AI_PROVIDER` manda; si no está, se cae al
- * comportamiento histórico de `DEMO_MODE`. Solo hay dos respuestas posibles:
- * `meta` (Meta Model API) o `demo` (fixtures locales, sin red). Cualquier otro
- * valor de `AI_PROVIDER` —o `meta` sin llave— baja a demo en vez de reventar a
- * mitad de la corrida.
+ * comportamiento histórico de `DEMO_MODE`. Si el usuario guardó una llave en
+ * la UI (`AppSetting.MUSE_IMAGE_API_KEY`), se activa `meta` automáticamente.
  */
 export function getProvider(): Provider {
   const explicit = (process.env.AI_PROVIDER ?? "").trim().toLowerCase();
-  if (explicit === "meta") return metaAvailable() ? "meta" : "demo";
   if (explicit === "demo") return "demo";
+  if (getSetting("MUSE_IMAGE_API_KEY")?.trim()) return "meta";
+  if (explicit === "meta") return metaAvailable() ? "meta" : "demo";
   const demo = (process.env.DEMO_MODE ?? "true").trim().toLowerCase();
   const demoOff = demo === "false" || demo === "0" || demo === "off";
   return demoOff && metaAvailable() ? "meta" : "demo";

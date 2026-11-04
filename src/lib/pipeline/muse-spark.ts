@@ -14,11 +14,13 @@ import {
   type CreativeStrategy,
   type CarouselSlide,
   type StoryCopy,
+  type BriefFocus,
 } from "@/lib/schema/campaign";
 import { archetypeForVariant, STYLE_ARCHETYPES, type StyleArchetype } from "@/lib/flyer/style-engine";
 import { autoFix, findViolations } from "./copy-validate";
 import { llmJson } from "./llm";
 import { MATERIAL_LIBRARY, learnedRulesBlock } from "./material-library";
+import { brandCopyBlock, stripBrandNameFromDirection, type BrandContext } from "./brand";
 import { generateAudiences, type Provider } from "./provider";
 
 export type MuseSparkInput = {
@@ -38,6 +40,12 @@ export type MuseSparkInput = {
   background?: BackgroundRecommendation | null;
   /** Reglas del skill aprendido que aplican a esta categoría (puede variar). */
   learnedRules?: string[];
+  /** Kit de marca del proyecto; ausente = diseñar libremente. */
+  brand?: BrandContext | null;
+  /** Intención mínima del usuario (1 línea, manda sobre inferencias). */
+  userBrief?: string;
+  /** Enfoque comercial elegido (orienta categoría, tono y CTA). */
+  focus?: BriefFocus;
 };
 
 export type MuseSparkOutput = {
@@ -59,6 +67,23 @@ const localeNames: Record<Locale, string> = {
   pt: "portugués brasilero",
   en: "inglés neutral",
 };
+
+/**
+ * Directriz por enfoque comercial elegido en la barra. Es orientación de
+ * encuadre y CTA, no copy prefabricado.
+ */
+function focusDirective(focus: BriefFocus | undefined): string {
+  switch (focus) {
+    case "promo":
+      return "PROMO / PRECIO: encuadrá las piezas como oferta usando SOLO lo que el brief o la foto traigan; jamás inventes cifras, porcentajes ni cuotas. CTA de aprovechamiento consultivo.";
+    case "personal":
+      return "MARCA PERSONAL / FIGURA PÚBLICA: la pieza presenta a la persona o su servicio, no un objeto en venta; tono de autoridad y cercanía, CTA de contacto o seguimiento. PROHIBIDO describir a la persona como producto o inventar cargos y títulos.";
+    case "launch":
+      return "LANZAMIENTO / CATÁLOGO: tono de novedad y descubrimiento, presentá la propuesta como nueva; CTA de conocer o explorar.";
+    default:
+      return "";
+  }
+}
 
 /**
  * Paso de copy. Lo escribe `muse-spark-1.3` vía `llmJson`; el prompt y la
@@ -224,39 +249,54 @@ async function runCopy(input: MuseSparkInput): Promise<MuseSparkOutput> {
       `- color secundario de la foto: ${design.secondaryColorHex}\n${bgLine}\n`
     : bg ? `${bgLine}\n` : "";
   const multiLine = grouped
-    ? `SON ${productCount} PRODUCTOS EN UN FLYER CONJUNTO: mostralos reconocibles, con jerarquía y proporciones coherentes. No mezcles atributos ni inventes datos. Si hay apoyo físico, que la luz y las sombras sean coherentes; elegí contexto y disposición según el concepto.\n`
-    : "";
+    ? `SON ${productCount} PRODUCTOS EN UN FLYER CONJUNTO (COMPOSICIÓN DE AGENCIA): en cada artDirection planificá un cluster compacto en V o media luna de dos planos cercanos sobre UNA ÚNICA superficie horizontal plana y continua (ej. 2 envases adelante y 2 medio paso atrás asomando entre ellos con 15–25% de solapamiento lateral sin tapar logos, con todas las bases apoyadas al mismo nivel y respetando la escala física real entre botellas grandes de 1,5 L y envases chicos). PROHIBIDO alinear los productos en una fila plana de góndola de borde a borde, PROHIBIDO apilar un producto flotando arriba por detrás, PROHIBIDO usar escalones, rocas o dos pisos, PROHIBIDO rodear productos de limpieza con comida cruda (limones cortados, romero) y PROHIBIDO tapar los envases con tarjetas blancas opacas. El CTA único de campaña debe referirse al combo o conjunto completo (ej. "Consultá por este combo"), JAMÁS a un solo producto aislado.\n`
+    : `PIEZA INDIVIDUAL DE AGENCIA (1 PRODUCTO HÉROE): en cada artDirection planificá un hero shot publicitario donde el producto domine con jerarquía clara (38–52% de la altura), luz principal + luz de recorte (rim light) que separe la silueta del fondo, sombra de contacto real en la base y una zona limpia de bokeh o aire para la tipografía sin tarjetas blancas opacas que tapen el producto.\n`;
   const learnedBlock = learnedRulesBlock(input.learnedRules ?? []);
+  const brandBlock = brandCopyBlock(input.brand ?? null);
+  const brief = (input.userBrief ?? "").trim().slice(0, 280);
+  const focusLine = focusDirective(input.focus);
+  const briefBlock =
+    brief || focusLine
+      ? `BRIEF DEL USUARIO (PRIORIDAD MÁXIMA — manda sobre cualquier inferencia tuya):\n` +
+        (brief ? `- Contexto escrito por el usuario: "${brief}"\n` : "") +
+        (focusLine ? `- Enfoque elegido: ${focusLine}\n` : "") +
+        `- La categoría, el contexto y el encuadre de TODA la campaña salen de acá. PROHIBIDO contradecirlo o inventar otro (si dice persona/servicio, no lo vendas como producto de góndola; si dice promo, el encuadre es oferta).\n` +
+        `- Los hechos del brief (nombres, ocasión, condición de oferta) son afirmaciones permitidas: sumalos a \`allowedClaims\`.\n` +
+        `- Lo que el brief NO dice sigue vedado: cifras concretas de precio, porcentajes, cuotas o specs solo si el brief o la foto los traen.\n\n`
+      : "";
   const prompt =
     `Sos un director creativo senior, estratega de performance y redactor de e-commerce. Escribí TODO en ${localeNames[input.locale]}.\n` +
     `Producto: ${input.productDescription}\n\n` +
+    briefBlock +
     (designLines
       ? `DATOS DE DISEÑO EXTRAÍDOS DE LA FOTO (pasada de visión):\n${designLines}`
       : "") +
     "Primero elaborá una estrategia para ESTE producto: qué se ve, qué se puede afirmar con evidencia, quién lo compraría, situación de uso, objetivo, promesa y un mundo visual coherente. Después creá dos ideas publicitarias originales para feed (cada una vende con un argumento distinto, no solo cambia palabras) que expresen distintos motivos de compra dentro de una campaña coherente. Utilizá AIDA o PAS cuando ayuden al argumento, no como plantilla visual.\n" +
-    (multiLine ? `${multiLine}\n` : "") +
+    `${multiLine}\n` +
     "FONDO CON CRITERIO: tomá la observación de visión como orientación, no como una escena obligatoria. Elegí para cada idea el entorno, color o tratamiento gráfico que tenga sentido para el producto y su audiencia; no impongas cocina, mesa, podio, texturas ni estudio de tres planos.\n" +
     `${MATERIAL_LIBRARY}\n` +
-    "Para cada dirección definí un concepto propio, composición, encuadre, escala, espacio, tipografía y contexto relacionados con el producto. Superficies y materiales son opcionales: usalos solamente si aportan.\n" +
-    "No asignes estilos por número de variante: no repitas por defecto fondo blanco editorial, división diagonal ni fondo negro con neón. Inventá para cada pieza una escena, encuadre, posición de producto y texto, iluminación, fondo, materiales, elementos, paleta y tipografía apropiados al producto y a la audiencia. Las composiciones deben diferenciarse en su idea y distribución, manteniendo identidad común.\n\n" +
-    "PALETA CON INTENCIÓN: justificá fondo y colores de acento según cada concepto, producto y audiencia. Explorá colores y entornos pertinentes en vez de asignar claro a una variante y oscuro a otra o cubrir la campaña de beige/gris por defecto; el neutro puede servir si tiene una razón. No agregues color o decoraciones sin relación con la idea.\n\n" +
-    "Escribí autónomamente: inferí el comprador probable y el contexto de uso, pero distingue inferencias de datos comprobados. Conservá exactamente las condiciones de la etiqueta: 'hasta 50' jamás significa '50 garantizados'. No inventes marca, precio, descuentos, certificaciones, pruebas, testimonios, garantía, envío ni métricas. No uses afirmaciones sobre atributos personales sensibles. Si un dato es ilegible, omitilo. Evitá copy vacío y promesas absolutas. Cada hook debe conectar un beneficio comprobable o un momento de uso con una motivación concreta del comprador; no conviertas los colores del envase o su reconocimiento en góndola en el principal argumento de venta. Cada CTA debe ser una acción realista como conocer, consultar o comprar, no una instrucción ajena a la compra. Evitá hacer promesas de rendimiento por semana o hogar que la etiqueta no confirme.\n\n" +
+    "Para cada dirección definí un concepto propio, esquema de composición explícito (elegí entre: 1. Composición de Lectura en Z para catálogos/combos, 2. Composición Central o Radial para eventos/lanzamientos/impacto, 3. Composición Minimalista con amplio espacio negativo para marcas premium/vehículos/estética limpia, o 4. Composición de Bloques/Cuadrícula ordenada para multiproducto), estructura en 3 niveles (1. Gancho/Encabezado dominante arriba o en el foco; 2. Mensaje principal breve en zona media con mucho aire/espacio en blanco; 3. Cierre y CTA con contraste agresivo y direccionalidad visual) y el formato gráfico exacto del CTA (un CTA NO siempre es un botón abajo: alterná entre frase contundente al final en tipografía grande y bold sin botón, recuadro o bloque destacado de cierre, sello/cupón promocional o callout lateral con flecha/acento).\n" +
+    "No asignes estilos por número de variante: no repitas por defecto fondo blanco editorial, división diagonal ni fondo negro con neón. Inventá para cada pieza una escena, encuadre, posición de producto y texto, iluminación, fondo, materiales, elementos, paleta y tipografía apropiados al producto y a la audiencia. Las composiciones deben diferenciarse en su idea, esquema compositivo y forma gráfica del CTA, manteniendo identidad común.\n\n" +
+    "PALETA CON INTENCIÓN Y CONTRASTE AGRESIVO: justificá fondo y colores de acento según cada concepto, producto y audiencia. Si el fondo es oscuro, las letras y el CTA deben ser claros/luminosos; si el fondo es claro, usá tipografía y cierre oscuros de alto impacto. El CTA debe resaltar inmediatamente del resto del diseño.\n\n" +
+    "REGLA DE LOS 3 SEGUNDOS Y ESCRITURA DIRECTA: si una persona no entiende qué vendés u ofrecés en 3 segundos, la composición y el copy fallaron. Escribí autónomamente: inferí el comprador probable y el contexto de uso, pero distinguí inferencias de datos comprobados. Conservá exactamente las condiciones de la etiqueta: 'hasta 50' jamás significa '50 garantizados'. No inventes marca, precio, descuentos, certificaciones, pruebas, testimonios, garantía, envío ni métricas. No uses afirmaciones sobre atributos personales sensibles. Si un dato es ilegible, omitilo. PROHIBIDO copy dubitativo, tibio o pasivo como 'para considerar', 'para tener en cuenta', 'to consider', 'to weigh for daily use': afirmá el beneficio comercial con seguridad y claridad inmediata.\n\n" +
     "LOCALIZACIÓN PARAGUAY: español comercial natural (voseo sí). PROHIBIDO modismos porteños y lunfardo: nada de 'finde' (decí 'fin de semana'), 're ' como intensificador ('re va' → 'ideal para'), 'cuando pinten' (decí 'cuando quieras'), 'copado', 'zarpado', 'laburo', 'morfar', 'bajón'. Preferí giros como 'cuando quieras', 'este fin de semana', 'para resolver la cena', 'para compartir en casa'.\n\n" +
     "COHERENCIA ESCENA-COPY: la dirección de arte de cada pieza debe poder mostrar lo que su copy afirma. PROHIBIDO contradicciones físicas: si la escena muestra un freezer o frío, no pongas comida cocida humeando adentro; si el titular dice 'Abrí el freezer', la escena incluye un freezer visible (no una parrilla con fuego de fondo sin freezer); si el producto es congelado, la escena es de frío o de preparación, nunca ambas mezcladas en el mismo plano.\n\n" +
     "PERSPECTIVAS DIFERENTES: explorá diferentes motivaciones o momentos relevantes al producto sin asignar escenarios fijos a los formatos. Mantené coherencia de marca y variedad real en la composición.\n\n" +
     "SIN REDUNDANCIA LITERAL: no repitas la misma frase exacta en subtítulo, pills y captions. Cada superficie (subheadline, featurePills, captionInstagram, captionFacebook) reformula el beneficio con otras palabras; si una frase ya apareció, la siguiente la parafrasea.\n\n" +
+    "PILLS COMERCIALES (featurePills): cada pill (<=24 chars, 2 a 4 palabras) destaca un uso, beneficio o formato comercial concreto basado en evidencia (ej. 'Pisos perfumados', 'Gatillo multiuso', 'Poder arrancagrasa'). PROHIBIDO escribir meta-observaciones de la foto o del envase como '1,5 en etiqueta', 'tapa dosificadora blanca', 'envase verde' o 'visible en foto'.\n\n" +
     "COPY CON INTENCIÓN: el titular y el apoyo de la imagen cuentan una idea persuasiva conectada con el producto y una necesidad o momento relevante; no llenes el arte con un inventario de beneficios. La descripción de cada post acompaña y amplía SU idea, plantea una situación o motivación y propone una acción; no se limita a describir la imagen, citar el texto del arte ni enumerar especificaciones. Nada de promesas ni resultados no verificados.\n\n" +
-    "TITULAR Y APOYO CON OFICIO (obligatorio): el hook (<=40) es promesa, tensión o momento de uso en segunda persona — PROHIBIDO abrir con la fórmula de catálogo '[Sustantivo] [marca] en [color/atributo]' (ej. 'Automóvil compacto Kia en gris…'). El body (<=125) trae UNA prueba observable de la foto + UN momento de uso concreto, hablándole al comprador (voseo); jamás repite el hook con otras palabras ni enumera especificaciones. Cada pieza vende un argumento DISTINTO con palabras DISTINTAS: si V1 habla de ciudad, V2 habla de otra motivación (primer auto, día a día, presencia) sin reciclar frases.\n\n" +
-    "CTA ÚNICO DE CAMPAÑA: elegí UNA sola acción consultiva y repetila IDÉNTICA, palabra por palabra, en feed V1, feed V2, story y cierre de carrusel (ej. siempre 'Consultá por este modelo', nunca tres variantes distintas).\n\n" +
+    "TITULAR Y APOYO CON OFICIO (obligatorio): el hook (<=40) es el Encabezado o Gancho de atención — directo, potente y entendible en menos de 3 segundos — en segunda persona o frase de impacto; PROHIBIDO abrir con la fórmula de catálogo '[Sustantivo] [marca] en [color/atributo]' (ej. 'Automóvil compacto Kia en gris…') y PROHIBIDO usar frases tibias ('to consider', 'to weigh', 'para considerar'). El body (<=125) es el Mensaje Principal de interés y deseo: texto breve, respirado y directo que combina UNA prueba observable de la foto + UN beneficio o momento de uso concreto, hablándole al comprador; jamás repite el hook ni enumera especificaciones. Cada pieza vende un argumento DISTINTO con palabras DISTINTAS.\n\n" +
+    "CLAVES PARA UN CTA EFECTIVO Y ÚNICO DE CAMPAÑA (cta <= 30 chars): elegí UNA sola frase de llamado a la acción contundente y repetila IDÉNTICA, palabra por palabra, en feed V1, feed V2, story y cierre de carrusel. Debe cumplir sí o sí: (1) Corto y claro (se entiende en menos de 2 segundos, sin rodeos), (2) Verbos de acción en imperativo o primera persona (ej. '¡Llevátelo hoy!', 'Reservá tu lugar ahora', 'Pedí tu combo hoy', 'Visitanos hoy', 'Escribinos ahora', 'Quiero mi promo', o en inglés 'Drive it today', 'Book your spot now', 'Claim this offer today', 'Get yours today'), (3) Añade urgencia o valor real ('hoy', 'ahora', 'ya', 'today', 'now') sin inventar descuentos ni teléfonos que no estén en el brief. PROHIBIDO usar CTAs pasivos o burocráticos como 'Ask about this compact car' o 'Consultá por este artículo'.\n\n" +
     "ANTI-INVENCIÓN (vehículos y todo producto): nunca inventes modelo, versión, año, kilometraje, consumo, precio, cuotas, premios ni equipamiento que no se vea o lea en la foto. Nombrá solo marca visible + tipo observable ('este Kia', 'este compacto').\n\n" +
     "PRIVACIDAD: nunca transcribas, expliques ni promociones una matrícula, patente, chapa, número de serie, documento o dirección visible. No uses la patente ni su existencia como beneficio, titular, concepto, CTA, copy o atributo del producto.\n\n" +
     "AFIRMACIONES PERMITIDAS (paso 1, obligatorio): primero listá en `allowedClaims` hasta 8 hechos extraídos del empaque (sustantivo del producto, cantidades, peso, origen, atributos como 'sin gluten'). Paso 2: escribí el copy con voz paraguaya casual y libre en el tono, pero OBLIGADO a usar solo esas afirmaciones: nada de 'a la plancha', 'lista para cocinar' ni métodos que el empaque no declare.\n\n" +
     "CANDADO DE TERMINOLOGÍA: usá SIEMPRE el sustantivo del empaque para el producto en superficies fácticas (apoyo, pills, captions). Si el empaque dice 'hamburguesa', prohibido 'medallones' ahí; 'burgers' solo vale en titulares casuales. Unificá unidades ('4 unidades' en todos lados, nunca 'piezas' en un lado y 'unidades' en otro).\n\n" +
     "CANDADO DE REGISTRO: voseo en TODAS las conjugaciones, no solo en los imperativos obvios. 'Trae cuatro unidades' está mal (es tú/tercera persona): es 'Traé'. Revisá cada verbo: 'prepara'→'prepará', 'arma'→'armá', 'compra'→'comprá', 'mira'→'mirá', 'suma'→'sumá'. Un solo verbo en tú arruina la pieza.\n\n" +
     (input.merchantLink
-      ? "El merchant indicó link de compra: podés usar CTA de compra directa ('Comprá', 'Pedí').\n\n"
-      : "SIN link de compra: no prometas compra directa, canal de contacto, cita, disponibilidad ni promoción no confirmada. Proponé una acción consultiva concreta relacionada con el producto y la pieza; evitá repetir CTA genéricos.\n\n") +
+      ? "El merchant indicó link de compra: usá un CTA de acción directa e inmediata con urgencia ('¡Compralo hoy!', 'Pedí el tuyo ahora', 'Shop now').\n\n"
+      : "SIN link ni teléfono en el brief: no inventes números de WhatsApp, direcciones físicas ni descuentos porcentuales que el brief no traiga, pero SÍ usá verbos de acción contundentes con urgencia ('¡Llevátelo hoy!', 'Reservá tu lugar ahora', 'Pedí este combo hoy', 'Escribinos hoy', 'Drive it today', 'Claim yours today').\n\n") +
     "TONO: claro, natural y adecuado al idioma y mercado seleccionado. El argumento y el CTA deben pertenecer al producto real; no uses ejemplos de otra categoría como plantilla.\n\n" +
+    (brandBlock === "" ? "" : `${brandBlock}\n`) +
     `Devolvé JSON con:\n` +
     "- standardizedTitle (<=120 chars)\n" +
     "- shortPitch (<=180 chars)\n" +
@@ -276,9 +316,25 @@ async function runCopy(input: MuseSparkInput): Promise<MuseSparkOutput> {
     "- legalDisclaimer: micro-línea legal (<=80) SOLO si el producto es un alimento congelado, crudo o que requiere preparación Y alguna escena muestra el plato preparado (ej. medallones en caja + hamburguesa armada con pan y lechuga): devolvé 'Imagen ilustrativa · Sugerencia de preparación' (o el equivalente en el idioma pedido). En cualquier otro caso devolvé \"\" (vacío).\n" +
     (learnedBlock === "" ? "" : `${learnedBlock}\n`) +
     "Respetá estrictamente los límites de caracteres.";
-  const raw = await llmJson<SparkRaw>(prompt, {
-    schema: sparkResponseSchema(wantStory, wantCarousel),
-  });
+  // Disparamos el copy principal y la generación de audiencias EN PARALELO
+  // (antes corrían en serie sumando ~35-50s extra, y si audiencias daba timeout
+  // abortaba toda la campaña). Además, audiencias tiene fallback determinístico.
+  const audiencesPromise = generateAudiences(input.productDescription, input.locale).catch(() => [
+    {
+      name: input.locale === "pt" ? "Compradores interessados" : input.locale === "en" ? "Interested shoppers" : "Hogares y compradores interesados",
+      interests: [clip(input.productDescription, 48) || "Hogar y consumo", "Compras online"],
+      ageMin: 22,
+      ageMax: 55,
+      geo: [input.locale === "pt" ? "BR" : "PY"],
+    },
+  ]);
+  const [raw, audiences] = await Promise.all([
+    llmJson<SparkRaw>(prompt, {
+      schema: sparkResponseSchema(wantStory, wantCarousel),
+      timeoutMs: 240_000,
+    }),
+    audiencesPromise,
+  ]);
 
   // Sin URLs externas: el flyer se compone en el cliente (Canvas) sobre la foto
   // real. `imageUrl` queda como centinela para mantener el contrato del schema.
@@ -326,8 +382,8 @@ async function runCopy(input: MuseSparkInput): Promise<MuseSparkOutput> {
     const hook = clip(o.hook, 40) || `Oferta ${i + 1}`;
     const body = clip(o.body, 125) || "Copy generado por IA.";
     return feedVariantSchema.parse({
-      concept: clip(o.concept, 60) || fallbackConcepts[i],
-      artDirection: clip(o.artDirection, 800) || fallbackDirections[i],
+      concept: clip(stripBrandNameFromDirection(String(o.concept ?? ""), input.brand), 60) || fallbackConcepts[i],
+      artDirection: clip(stripBrandNameFromDirection(String(o.artDirection ?? ""), input.brand), 800) || fallbackDirections[i],
       styleArchetype: STYLE_ARCHETYPES.includes(o.styleArchetype as StyleArchetype) ? o.styleArchetype : archetypeForVariant(i),
       hook,
       body,
@@ -361,8 +417,8 @@ async function runCopy(input: MuseSparkInput): Promise<MuseSparkOutput> {
   const storyRaw = obj(raw.story);
   const story = wantStory && storyRaw
     ? storyCopySchema.parse({
-        concept: clip(storyRaw.concept, 60) || "Momento de uso",
-        artDirection: clip(storyRaw.artDirection, 800) || fallbackStoryDirection,
+        concept: clip(stripBrandNameFromDirection(String(storyRaw.concept ?? ""), input.brand), 60) || "Momento de uso",
+        artDirection: clip(stripBrandNameFromDirection(String(storyRaw.artDirection ?? ""), input.brand), 800) || fallbackStoryDirection,
         hook: clip(storyRaw.hook, 40) || feedVariants[0].hook,
         cta: clip(storyRaw.cta, 30) || feedVariants[0].cta,
       })
@@ -384,14 +440,12 @@ async function runCopy(input: MuseSparkInput): Promise<MuseSparkOutput> {
     bullets: flyerBullets.map((b) => clip(b, 200)),
   });
 
-  const audiences = await generateAudiences(input.productDescription, input.locale);
-
   const strategy = obj(raw.creativeStrategy) ?? {};
   const creativeStrategy: CreativeStrategy = {
     campaignIdea: clip(strategy.campaignIdea, 160) || listing.standardizedTitle,
     audience: clip(strategy.audience, 160) || audiences[0]?.name || "Compradores interesados en el producto",
     objective: clip(strategy.objective, 120) || "Presentar el producto y facilitar su elección",
-    visualWorld: clip(strategy.visualWorld, 600) || input.productDescription || listing.standardizedTitle,
+    visualWorld: clip(stripBrandNameFromDirection(String(strategy.visualWorld ?? ""), input.brand), 600) || input.productDescription || listing.standardizedTitle,
     carouselRecommended: strategy.carouselRecommended === true,
     carouselReason: clip(strategy.carouselReason, 300) || "La campaña prioriza piezas individuales para presentar el producto.",
   };
@@ -471,7 +525,27 @@ async function runCopy(input: MuseSparkInput): Promise<MuseSparkOutput> {
 
   // CTA ÚNICO DE CAMPAÑA (determinístico): el de V1 manda; V2, story y cierre
   // de carrusel lo repiten idéntico para no mostrar tres acciones distintas.
-  const campaignCta = feedVariants[0].cta;
+  // Si hay logo de marca, quitamos el redundante "en <Marca>" del botón; y si
+  // es un combo de varios envases distintos donde el CTA nombró solo una marca,
+  // lo generalizamos sin pisar CTAs de servicios, quintas o eventos.
+  let campaignCta = feedVariants[0].cta.trim();
+  if (input.brand?.hasLogo && input.brand.name) {
+    const escaped = input.brand.name.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    campaignCta = campaignCta.replace(new RegExp(`\\s+(?:en|de|por)\\s+${escaped}\\b`, "i"), "").trim();
+  }
+  const isPhysicalBundle = grouped && /\b(botella|envase|litro|ml|gr|kg|lavavajillas|friegasuelos|limpiador|detergente|desinfectante|paquete|caja)\b/i.test(input.productDescription);
+  if (
+    isPhysicalBundle &&
+    !/\b(combo|kit|pack|productos|conjunto|línea|linea|hogar|limpieza|oferta|todo|catálogo|catalogo|caja|fecha|lugar|reserva)\b/i.test(campaignCta) &&
+    /\b(aroma\s*spa|axion|fabuloso|mpl)\b/i.test(campaignCta)
+  ) {
+    campaignCta = input.locale === "pt"
+      ? "Consulte este combo"
+      : input.locale === "en"
+        ? "Ask about this bundle"
+        : "Consultá por este combo";
+  }
+  feedVariants[0].cta = campaignCta;
   feedVariants[1].cta = campaignCta;
   if (story) story.cta = campaignCta;
   if (carouselSlides.length === 4) carouselSlides[3] = { ...carouselSlides[3], cta: campaignCta };

@@ -1,18 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CampaignResult, Locale, Placement, StageEvent } from "@/lib/schema/campaign";
+import type { BriefFocus, CampaignResult, Locale, Placement, StageEvent } from "@/lib/schema/campaign";
 import type { Provider } from "@/lib/pipeline";
 import { streamCampaign } from "@/lib/sse-client";
-import { assetMeta, store, type Asset, type CampaignSummary, type Learning, type Project, type SkillRule } from "@/lib/store/client";
+import { assetMeta, store, type ApiKeySettings, type Asset, type BrandKit, type CampaignSummary, type Learning, type Project, type SkillRule } from "@/lib/store/client";
 import { ComposerBar } from "./ComposerBar";
 import { AgentFeed } from "./AgentFeed";
-import { reduceStages, type StageTracker } from "./ProgressBar";
+import { failRunningStages, reduceStages, type StageTracker } from "./ProgressBar";
 import { ResultsTabs } from "./ResultsTabs";
 import { TopBar } from "./TopBar";
+import { PlatformTour } from "./PlatformTour";
 import { ProjectsPanel } from "./ide/ProjectsPanel";
 import { AssetsPanel } from "./ide/AssetsPanel";
 import type { MerchantInput } from "./ComposerBar";
+import type { PiecePlacement } from "@/lib/pipeline/refine-piece";
+import { I18nProvider, useI18n, type UiLang } from "@/lib/i18n";
 
 const IDLE_TRACKER: StageTracker = {
   sam: "idle",
@@ -26,17 +29,43 @@ const ACTIVE_KEY = "adforge.activeProjectId";
 const MAX_FILES = 4;
 
 export function Dashboard({ provider }: { provider: Provider }) {
+  const [locale, setLocale] = useState<Locale>("es");
+  const handleLangChange = useCallback((lang: UiLang) => {
+    setLocale((prev) => (prev === "pt" ? prev : lang));
+  }, []);
+  return (
+    <I18nProvider onLangChange={handleLangChange}>
+      <DashboardInner provider={provider} locale={locale} setLocale={setLocale} />
+    </I18nProvider>
+  );
+}
+
+function DashboardInner({
+  provider,
+  locale,
+  setLocale,
+}: {
+  provider: Provider;
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+}) {
+  const { t } = useI18n();
+
   // Lienzo / pipeline
   const [files, setFiles] = useState<File[]>([]);
-  const [locale, setLocale] = useState<Locale>("es");
   const [placements, setPlacements] = useState<Placement[]>(["feed", "story"]);
   const [merchant, setMerchant] = useState<MerchantInput>({ price: "" });
   const [groupMode, setGroupMode] = useState(true);
+  const [brief, setBrief] = useState("");
+  const [focus, setFocus] = useState<BriefFocus | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [tracker, setTracker] = useState<StageTracker>(IDLE_TRACKER);
   const [result, setResult] = useState<CampaignResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Configuración Meta API Key
+  const [apiKeySettings, setApiKeySettings] = useState<ApiKeySettings | null>(null);
 
   // Persistencia / IDE
   const [projects, setProjects] = useState<Project[]>([]);
@@ -44,17 +73,62 @@ export function Dashboard({ provider }: { provider: Provider }) {
   const [campaigns, setCampaigns] = useState<CampaignSummary[]>([]);
   const [activeCampaignId, setActiveCampaignId] = useState<string | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const activeCampaignRef = useRef<string | null>(null);
+  useEffect(() => { activeCampaignRef.current = activeCampaignId; }, [activeCampaignId]);
+
+  const refinePiece = useCallback(async (placement: PiecePlacement, instruction: string, mode?: "refine" | "regenerate") => {
+    const id = activeCampaignId;
+    if (!id) throw new Error(t.dashboard.errCampaignNotSaved);
+    const saved = await store.refinePiece(id, placement, instruction, mode);
+    if (activeCampaignRef.current !== id) return;
+    setResult((current) => {
+      if (!current) return current;
+      const next = { ...current, feedVariants: [...current.feedVariants], feedImages: [...current.feedImages], feedErrors: [...current.feedErrors], feedReviews: [...current.feedReviews], artworkDims: { ...current.artworkDims, feed: [...current.artworkDims.feed] }, copyReview: saved.result.copyReview, diversityReview: saved.result.diversityReview };
+      if (placement === "story") { next.story = saved.result.story; next.storyImage = saved.result.storyImage; next.storyError = saved.result.storyError; next.storyReview = saved.result.storyReview; next.artworkDims.story = saved.result.artworkDims.story; }
+      else { const i = placement === "feed-1" ? 1 : 0; next.feedVariants[i] = saved.result.feedVariants[i]; next.feedImages[i] = saved.result.feedImages[i]; next.feedErrors[i] = saved.result.feedErrors[i]; next.feedReviews[i] = saved.result.feedReviews[i]; next.artworkDims.feed[i] = saved.result.artworkDims.feed[i]; }
+      next.refinements = [...new Map([...current.refinements, ...saved.result.refinements].map((v) => [v.id, v])).values()].sort((a, b) => a.at - b.at).slice(-50);
+      return next;
+    });
+    setAssets((current) => [...new Map([...current, ...saved.assets].map((v) => [v.id, v])).values()]);
+    if (saved.notice) throw new Error(saved.notice);
+  }, [activeCampaignId, t.dashboard.errCampaignNotSaved]);
+
   const [restoredSources, setRestoredSources] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [storeError, setStoreError] = useState<string | null>(null);
   const [storeReady, setStoreReady] = useState(false);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [tourOpen, setTourOpen] = useState(false);
+
+  const handleTourTarget = useCallback((target: string) => {
+    if (target === "projects-panel") {
+      setLeftCollapsed(false);
+    } else if (target === "brand-kit" || target === "assets-library") {
+      setRightCollapsed(false);
+    }
+  }, []);
 
   // Skill aprendido: reglas + conteo de piezas analizadas del proyecto.
   const [skills, setSkills] = useState<SkillRule[]>([]);
   const [skillThreshold, setSkillThreshold] = useState(3);
   const [learningsTotal, setLearningsTotal] = useState(0);
+
+  // Kit de marca del proyecto activo (null = sin kit, el agente diseña libremente).
+  const [brandKit, setBrandKit] = useState<BrandKit | null>(null);
+  const [brandLogoUrl, setBrandLogoUrl] = useState<string | null>(null);
+
+  const handleSaveApiKey = useCallback(async (key: string) => {
+    const updated = await store.saveApiKey(key);
+    setApiKeySettings(updated);
+    return updated;
+  }, []);
+
+  const handleClearApiKey = useCallback(async () => {
+    const updated = await store.clearApiKey();
+    setApiKeySettings(updated);
+    return updated;
+  }, []);
 
   const refreshSkill = useCallback(async (projectId: string | null) => {
     try {
@@ -70,7 +144,6 @@ export function Dashboard({ provider }: { provider: Provider }) {
     }
   }, []);
 
-  /** File (por identidad) → Asset id en el servidor, para enlazar al guardar. */
   const sourceMapRef = useRef(new Map<File, string>());
   const bootRef = useRef(false);
 
@@ -89,42 +162,48 @@ export function Dashboard({ provider }: { provider: Provider }) {
   }, []);
 
   const loadProjectData = useCallback(async (projectId: string) => {
-    const [{ campaigns: list }, { assets: all }] = await Promise.all([
+    const [{ campaigns: list }, { assets: all }, { kit, logo }] = await Promise.all([
       store.listCampaigns(projectId),
       store.listAssets(projectId),
+      store.getBrandKit(projectId).catch(() => ({ kit: null, logo: null })),
     ]);
     setCampaigns(list);
     setAssets(all);
+    setBrandKit(kit);
+    setBrandLogoUrl(logo?.url ?? null);
   }, []);
 
   const ensureProject = useCallback(async (): Promise<string | null> => {
     if (activeProjectId) return activeProjectId;
     try {
-      const { project } = await store.createProject("Mi proyecto");
+      const { project } = await store.createProject(t.dashboard.defaultProjectName);
       await refreshProjects();
       setActiveProjectId(project.id);
       localStorage.setItem(ACTIVE_KEY, project.id);
       return project.id;
     } catch (err) {
-      setStoreError(err instanceof Error ? err.message : "No se pudo crear el proyecto.");
+      setStoreError(err instanceof Error ? err.message : t.dashboard.errCreateProject);
       return null;
     }
-  }, [activeProjectId, refreshProjects]);
+  }, [activeProjectId, refreshProjects, t.dashboard.defaultProjectName, t.dashboard.errCreateProject]);
 
-  // Arranque: proyectos, proyecto activo y sus datos.
+  // Arranque: configuración API, proyectos, proyecto activo y sus datos.
   useEffect(() => {
     if (bootRef.current) return;
     bootRef.current = true;
     (async () => {
       try {
+        store.getSettings().then(setApiKeySettings).catch(() => {});
         let list = await refreshProjects();
         if (list.length === 0) {
-          const { project } = await store.createProject("Mi proyecto");
+          const { project } = await store.createProject(t.dashboard.defaultProjectName);
           list = await refreshProjects();
           setActiveProjectId(project.id);
           localStorage.setItem(ACTIVE_KEY, project.id);
           setCampaigns([]);
           setAssets([]);
+          setBrandKit(null);
+          setBrandLogoUrl(null);
         } else {
           const saved = localStorage.getItem(ACTIVE_KEY);
           const id = list.some((p) => p.id === saved) ? (saved as string) : list[0].id;
@@ -134,12 +213,12 @@ export function Dashboard({ provider }: { provider: Provider }) {
           await refreshSkill(id);
         }
       } catch (err) {
-        setStoreError(err instanceof Error ? err.message : "No se pudo cargar la biblioteca.");
+        setStoreError(err instanceof Error ? err.message : t.dashboard.errLoadLibrary);
       } finally {
         setStoreReady(true);
       }
     })();
-  }, [refreshProjects, loadProjectData, refreshSkill]);
+  }, [refreshProjects, loadProjectData, refreshSkill, t.dashboard.defaultProjectName, t.dashboard.errLoadLibrary]);
 
   const uploadNewFiles = useCallback(
     async (projectId: string, candidates: File[]) => {
@@ -147,7 +226,6 @@ export function Dashboard({ provider }: { provider: Provider }) {
       if (fresh.length === 0) return;
       try {
         const { assets: saved } = await store.uploadSources(projectId, fresh);
-        // Empareja por nombre en orden de subida.
         fresh.forEach((file, i) => {
           const match = saved.find((a) => (assetMeta(a).filename ?? "") === file.name) ?? saved[i];
           if (match) sourceMapRef.current.set(file, match.id);
@@ -155,10 +233,10 @@ export function Dashboard({ provider }: { provider: Provider }) {
         setAssets((prev) => [...saved, ...prev]);
         void refreshProjects();
       } catch (err) {
-        setStoreError(err instanceof Error ? err.message : "No se pudieron subir las fuentes.");
+        setStoreError(err instanceof Error ? err.message : t.dashboard.errUploadSources);
       }
     },
-    [refreshProjects],
+    [refreshProjects, t.dashboard.errUploadSources],
   );
 
   const handleFilesChange = useCallback(
@@ -200,7 +278,6 @@ export function Dashboard({ provider }: { provider: Provider }) {
     if (files.length === 0 || isRunning) return;
     const projectId = await ensureProject();
     if (!projectId) return;
-    // Garantiza que las fuentes estén subidas antes de generar.
     await uploadNewFiles(projectId, files);
 
     abortRef.current?.abort();
@@ -216,7 +293,7 @@ export function Dashboard({ provider }: { provider: Provider }) {
     let finalResult: CampaignResult | null = null;
     let failure: string | null = null;
     try {
-      for await (const event of streamCampaign(files, locale, placements, merchant, { groupMode }, controller.signal)) {
+      for await (const event of streamCampaign(files, locale, placements, merchant, { groupMode, projectId, brief, focus: focus ?? undefined }, controller.signal)) {
         if (event.kind === "stage") {
           setTracker((prev) => reduceStages(prev, event.payload as StageEvent));
         } else if (event.kind === "result") {
@@ -225,31 +302,43 @@ export function Dashboard({ provider }: { provider: Provider }) {
         } else if (event.kind === "error") {
           failure = event.payload.message;
           setError(event.payload.message);
+          setTracker((prev) => failRunningStages(prev, event.payload.message));
         }
+      }
+      if (!finalResult && !failure && !controller.signal.aborted) {
+        failure = t.dashboard.errConnectionClosed;
+        setError(failure);
+        const message = failure;
+        setTracker((prev) => failRunningStages(prev, message));
       }
     } catch (err) {
       if (controller.signal.aborted) return;
-      failure = err instanceof Error ? err.message : "Fallo inesperado en el pipeline.";
+      failure = err instanceof Error ? err.message : t.dashboard.errPipelineUnexpected;
       setError(failure);
+      const message = failure;
+      setTracker((prev) => failRunningStages(prev, message));
     } finally {
       setIsRunning(false);
     }
 
-    // Persistencia: guarda la campaña (éxito o error) con sus assets.
     try {
       setSaving(true);
       const sourceAssetIds = files
         .map((f) => sourceMapRef.current.get(f))
         .filter((id): id is string => !!id);
-      const prompt = finalResult
-        ? `${finalResult.listing.standardizedTitle} · ${placements.join("+")} · ${locale}${merchant.price.trim() ? ` · ${merchant.price.trim()}` : ""}`
-        : `${files.length} foto(s) · ${placements.join("+")} · ${locale}`;
+      const prompt = brief.trim()
+        ? brief.trim().slice(0, 120)
+        : finalResult
+          ? `${finalResult.listing.standardizedTitle} · ${placements.join("+")} · ${locale}${merchant.price.trim() ? ` · ${merchant.price.trim()}` : ""}`
+          : `${t.dashboard.photosPromptFallback(files.length)} · ${placements.join("+")} · ${locale}`;
       const saved = await store.saveCampaign({
         projectId,
         prompt,
         status: finalResult ? "done" : "error",
         result: finalResult,
         sourceAssetIds,
+        brief,
+        focus,
       });
       if (saved.campaign.resultJson) {
         setResult(JSON.parse(saved.campaign.resultJson) as CampaignResult);
@@ -261,11 +350,11 @@ export function Dashboard({ provider }: { provider: Provider }) {
       });
       await Promise.all([loadProjectData(projectId), refreshProjects(), refreshSkill(projectId)]);
     } catch (err) {
-      setStoreError(err instanceof Error ? err.message : "No se pudo guardar la campaña.");
+      setStoreError(err instanceof Error ? err.message : t.dashboard.errSaveCampaign);
     } finally {
       setSaving(false);
     }
-  }, [files, isRunning, ensureProject, uploadNewFiles, locale, placements, merchant, groupMode, loadProjectData, refreshProjects, refreshSkill]);
+  }, [files, isRunning, ensureProject, uploadNewFiles, locale, placements, merchant, groupMode, brief, focus, loadProjectData, refreshProjects, refreshSkill, t.dashboard]);
 
   const handleSelectProject = useCallback(
     async (id: string) => {
@@ -277,10 +366,10 @@ export function Dashboard({ provider }: { provider: Provider }) {
         await loadProjectData(id);
         await refreshSkill(id);
       } catch (err) {
-        setStoreError(err instanceof Error ? err.message : "No se pudo cargar el proyecto.");
+        setStoreError(err instanceof Error ? err.message : t.dashboard.errLoadProject);
       }
     },
-    [activeProjectId, startNewSession, loadProjectData, refreshSkill],
+    [activeProjectId, startNewSession, loadProjectData, refreshSkill, t.dashboard.errLoadProject],
   );
 
   const handleCreateProject = useCallback(
@@ -295,11 +384,13 @@ export function Dashboard({ provider }: { provider: Provider }) {
         setAssets([]);
         setSkills([]);
         setLearningsTotal(0);
+        setBrandKit(null);
+        setBrandLogoUrl(null);
       } catch (err) {
-        setStoreError(err instanceof Error ? err.message : "No se pudo crear el proyecto.");
+        setStoreError(err instanceof Error ? err.message : t.dashboard.errCreateProject);
       }
     },
-    [refreshProjects, startNewSession],
+    [refreshProjects, startNewSession, t.dashboard.errCreateProject],
   );
 
   const handleRenameProject = useCallback(
@@ -308,10 +399,10 @@ export function Dashboard({ provider }: { provider: Provider }) {
         await store.renameProject(id, name);
         await refreshProjects();
       } catch (err) {
-        setStoreError(err instanceof Error ? err.message : "No se pudo renombrar.");
+        setStoreError(err instanceof Error ? err.message : t.dashboard.errRenameProject);
       }
     },
-    [refreshProjects],
+    [refreshProjects, t.dashboard.errRenameProject],
   );
 
   const handleDeleteProject = useCallback(
@@ -333,13 +424,15 @@ export function Dashboard({ provider }: { provider: Provider }) {
             setAssets([]);
             setSkills([]);
             setLearningsTotal(0);
+            setBrandKit(null);
+            setBrandLogoUrl(null);
           }
         }
       } catch (err) {
-        setStoreError(err instanceof Error ? err.message : "No se pudo eliminar el proyecto.");
+        setStoreError(err instanceof Error ? err.message : t.dashboard.errDeleteProject);
       }
     },
-    [activeProjectId, refreshProjects, startNewSession, loadProjectData, refreshSkill],
+    [activeProjectId, refreshProjects, startNewSession, loadProjectData, refreshSkill, t.dashboard.errDeleteProject],
   );
 
   const handleSelectCampaign = useCallback(async (id: string) => {
@@ -361,9 +454,9 @@ export function Dashboard({ provider }: { provider: Provider }) {
       sourceMapRef.current.clear();
       setTracker(IDLE_TRACKER);
     } catch (err) {
-      setStoreError(err instanceof Error ? err.message : "No se pudo abrir la sesión.");
+      setStoreError(err instanceof Error ? err.message : t.dashboard.errOpenSession);
     }
-  }, []);
+  }, [t.dashboard.errOpenSession]);
 
   const handleDeleteCampaign = useCallback(
     async (id: string) => {
@@ -377,24 +470,24 @@ export function Dashboard({ provider }: { provider: Provider }) {
           await refreshProjects();
         }
       } catch (err) {
-        setStoreError(err instanceof Error ? err.message : "No se pudo eliminar la sesión.");
+        setStoreError(err instanceof Error ? err.message : t.dashboard.errDeleteSession);
       }
     },
-    [activeCampaignId, activeProjectId, startNewSession, refreshProjects],
+    [activeCampaignId, activeProjectId, startNewSession, refreshProjects, t.dashboard.errDeleteSession],
   );
 
   const handleReuseSource = useCallback(
     async (asset: Asset) => {
       if (files.length >= MAX_FILES) {
-        setError(`Máximo ${MAX_FILES} fotos por campaña.`);
+        setError(t.dashboard.errMaxPhotos(MAX_FILES));
         return;
       }
       try {
         const response = await fetch(asset.url);
-        if (!response.ok) throw new Error("No se pudo leer la fuente.");
+        if (!response.ok) throw new Error(t.dashboard.errReadSource);
         const blob = await response.blob();
         const meta = assetMeta(asset);
-        const file = new File([blob], meta.filename ?? `fuente-${asset.id.slice(0, 8)}.png`, {
+        const file = new File([blob], meta.filename ?? `source-${asset.id.slice(0, 8)}.png`, {
           type: meta.mime ?? blob.type ?? "image/png",
         });
         sourceMapRef.current.set(file, asset.id);
@@ -404,18 +497,46 @@ export function Dashboard({ provider }: { provider: Provider }) {
         setActiveCampaignId(null);
         setError(null);
       } catch (err) {
-        setStoreError(err instanceof Error ? err.message : "No se pudo reutilizar la fuente.");
+        setStoreError(err instanceof Error ? err.message : t.dashboard.errReuseSource);
       }
     },
-    [files.length],
+    [files.length, t.dashboard],
+  );
+
+  const handleSaveBrand = useCallback(
+    async (kit: { name: string; primaryColor: string; secondaryColor: string; accentColor: string; logoAssetId: string | null; logoPosition: "auto" | "left" | "right" }) => {
+      if (!activeProjectId) return;
+      try {
+        const { kit: saved } = await store.saveBrandKit(activeProjectId, kit);
+        setBrandKit(saved);
+        const logo = saved.logoAssetId ? assets.find((a) => a.id === saved.logoAssetId) ?? null : null;
+        setBrandLogoUrl(logo?.url ?? brandLogoUrl);
+        if (saved.logoAssetId && !logo) {
+          const { assets: all } = await store.listAssets(activeProjectId);
+          setAssets(all);
+          setBrandLogoUrl(all.find((a) => a.id === saved.logoAssetId)?.url ?? null);
+        }
+      } catch (err) {
+        setStoreError(err instanceof Error ? err.message : t.dashboard.errSaveBrand);
+      }
+    },
+    [activeProjectId, assets, brandLogoUrl, t.dashboard.errSaveBrand],
+  );
+
+  const handleUploadLogo = useCallback(
+    async (file: File) => {
+      if (!activeProjectId) return null;
+      const { assets: saved } = await store.uploadSources(activeProjectId, [file], "logo");
+      setAssets((prev) => [...saved, ...prev]);
+      return saved[0] ?? null;
+    },
+    [activeProjectId],
   );
 
   useEffect(() => {
     return () => abortRef.current?.abort();
   }, []);
 
-  // Señal humana de éxito: cada descarga de flyer marca los learnings de la
-  // sesión activa como exportados (peso real frente a la auto-evaluación).
   useEffect(() => {
     const onExport = () => {
       if (activeCampaignId) {
@@ -427,15 +548,28 @@ export function Dashboard({ provider }: { provider: Provider }) {
   }, [activeCampaignId]);
 
   const sources = useMemo(() => assets.filter((a) => a.type === "source"), [assets]);
-  const flyers = useMemo(() => assets.filter((a) => a.type !== "source"), [assets]);
+  const flyers = useMemo(() => assets.filter((a) => a.type === "feed" || a.type === "story" || a.type === "carousel"), [assets]);
+
   return (
     <div className="flex h-screen flex-col overflow-hidden night-glow">
-      <TopBar provider={provider} />
+      <TopBar
+        provider={provider}
+        apiKeySettings={apiKeySettings}
+        onSaveApiKey={handleSaveApiKey}
+        onClearApiKey={handleClearApiKey}
+        onStartTour={() => setTourOpen(true)}
+      />
+      <PlatformTour
+        key={String(tourOpen)}
+        open={tourOpen}
+        onClose={() => setTourOpen(false)}
+        onStepTarget={handleTourTarget}
+      />
       {storeError && (
         <p role="alert" className="border-b border-danger-dark/40 bg-danger/10 px-4 py-1.5 font-mono text-[11px] text-danger">
-          Biblioteca: {storeError}{" "}
+          {t.dashboard.libraryAlertPrefix} {storeError}{" "}
           <button type="button" onClick={() => setStoreError(null)} className="underline">
-            ocultar
+            {t.dashboard.hideAlert}
           </button>
         </p>
       )}
@@ -457,13 +591,18 @@ export function Dashboard({ provider }: { provider: Provider }) {
         />
         <main className="min-w-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex min-h-full w-full max-w-[920px] flex-col gap-4 p-4 sm:p-5">
-            <CenterState
-              result={result}
-              isRunning={isRunning}
-              tracker={tracker}
-              previewUrls={activePreviewUrls}
-            />
-            <div className="mt-auto">
+            <div data-tour="center-canvas" className="flex min-w-0 flex-1 flex-col">
+              <CenterState
+                result={result}
+                isRunning={isRunning}
+                tracker={tracker}
+                previewUrls={activePreviewUrls}
+                onRefinePiece={activeCampaignId ? refinePiece : undefined}
+                logoUrl={brandLogoUrl}
+                logoPosition={brandKit?.logoPosition ?? "auto"}
+              />
+            </div>
+            <div data-tour="composer-bar" className="mt-auto">
               <ComposerBar
                 files={files}
                 previewUrls={activePreviewUrls}
@@ -471,6 +610,8 @@ export function Dashboard({ provider }: { provider: Provider }) {
                 placements={placements}
                 merchant={merchant}
                 groupMode={groupMode}
+                brief={brief}
+                focus={focus}
                 isRunning={isRunning || !storeReady}
                 error={error}
                 onFilesChange={handleFilesChange}
@@ -478,6 +619,8 @@ export function Dashboard({ provider }: { provider: Provider }) {
                 onPlacementsChange={setPlacements}
                 onMerchantChange={setMerchant}
                 onGroupModeChange={setGroupMode}
+                onBriefChange={setBrief}
+                onFocusChange={setFocus}
                 onSubmit={handleSubmit}
                 onCancel={handleCancel}
               />
@@ -494,19 +637,26 @@ export function Dashboard({ provider }: { provider: Provider }) {
           skills={skills}
           skillThreshold={skillThreshold}
           learningsTotal={learningsTotal}
+          brandKit={brandKit}
+          brandLogoUrl={brandLogoUrl}
+          onSaveBrand={handleSaveBrand}
+          onUploadLogo={handleUploadLogo}
+          apiKeySettings={apiKeySettings}
+          onSaveApiKey={handleSaveApiKey}
+          onClearApiKey={handleClearApiKey}
         />
       </div>
       <footer className="border-t border-night-rule/60 bg-night px-6 py-2">
         <p className="mx-auto max-w-[1400px] font-mono text-[10px] uppercase tracking-widest text-paper-muted">
-          AdForge AI · Cerebral Valley Hackathon · SQLite local
+          AdForge AI · Cerebral Valley Hackathon · {t.dashboard.footerLocalDb}
           {result && (
             <>
               {" "}
               · SKU {result.skuId} · {result.timings.total} ms
-              {result.productCount > 1 ? ` · ${result.productCount} productos` : ""}
+              {result.productCount > 1 ? ` · ${result.productCount} ${t.dashboard.footerProducts}` : ""}
             </>
           )}
-          {activeCampaignId && " · sesión guardada"}
+          {activeCampaignId && ` · ${t.dashboard.footerSessionSaved}`}
         </p>
       </footer>
     </div>
@@ -518,12 +668,19 @@ function CenterState({
   isRunning,
   tracker,
   previewUrls,
+  onRefinePiece,
+  logoUrl,
+  logoPosition,
 }: {
   result: CampaignResult | null;
   isRunning: boolean;
   tracker: StageTracker;
   previewUrls: string[];
+  onRefinePiece?: (placement: PiecePlacement, instruction: string, mode?: "refine" | "regenerate") => Promise<void>;
+  logoUrl?: string | null;
+  logoPosition?: "auto" | "left" | "right" | null;
 }) {
+  const { t } = useI18n();
   const trackerActive = (Object.keys(tracker) as Array<"sam" | "museImage" | "museSpark" | "review">).some(
     (k) => tracker[k] !== "idle",
   );
@@ -536,7 +693,7 @@ function CenterState({
     return (
       <div className="flex min-w-0 flex-col gap-4">
         <AgentFeed tracker={tracker} isRunning={false} total={result.timings.total} compact />
-        <ResultsTabs result={result} previewUrls={previewUrls} />
+        <ResultsTabs result={result} previewUrls={previewUrls} onRefinePiece={onRefinePiece} logoUrl={logoUrl} logoPosition={logoPosition} />
       </div>
     );
   }
@@ -548,16 +705,15 @@ function CenterState({
           ✦
         </span>
         <h2 className="mt-4 font-display text-xl font-semibold tracking-tight text-paper">
-          Convertí fotos en campaña
+          {t.dashboard.emptyTitle}
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-paper-muted">
-          Adjuntá hasta 4 fotos del producto en la barra inferior y 4 agentes
-          generarán el flyer: visión, copy AIDA, render y auditoría visual.
+          {t.dashboard.emptyDesc}
         </p>
         <ul className="mx-auto mt-4 max-w-xs space-y-1.5 text-left font-mono text-[11px] text-paper-dim">
-          <li><span className="text-mint">›</span> + para adjuntar · ⏎ para generar</li>
-          <li><span className="text-mint">›</span> ⚙ ajusta mercado, piezas y precio</li>
-          <li><span className="text-mint">›</span> Todo se guarda en la biblioteca →</li>
+          <li><span className="text-mint">›</span> {t.dashboard.emptyBullet1}</li>
+          <li><span className="text-mint">›</span> {t.dashboard.emptyBullet2}</li>
+          <li><span className="text-mint">›</span> {t.dashboard.emptyBullet3}</li>
         </ul>
       </div>
     </div>

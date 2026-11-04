@@ -1,5 +1,6 @@
 import { STYLE_ARCHETYPES, type StyleArchetype } from "@/lib/flyer/style-engine";
 import { z } from "zod";
+import { layoutLayersSchema } from "@/lib/flyer/layers";
 
 /**
  * Ported from `agent.py`'s Pydantic models (SEOData, CatalogDraft) and extended
@@ -21,6 +22,23 @@ export type Locale = z.infer<typeof localeSchema>;
 export const placementSchema = z.enum(["feed", "story", "carousel"]);
 export type Placement = z.infer<typeof placementSchema>;
 export const placementsSchema = z.array(placementSchema).min(1).max(3);
+
+/**
+ * Enfoque comercial elegido en la barra (1 clic). Orienta categoría, tono y
+ * CTA del copy sin que el usuario escriba un brief largo.
+ */
+export const briefFocusSchema = z.enum(["product", "promo", "personal", "launch"]);
+export type BriefFocus = z.infer<typeof briefFocusSchema>;
+
+export const BRIEF_FOCUS_LABELS: Record<BriefFocus, string> = {
+  product: "Venta de producto",
+  promo: "Promo / Precio",
+  personal: "Marca personal / Figura pública",
+  launch: "Lanzamiento / Catálogo",
+};
+
+/** Texto libre del usuario (1 línea de contexto). Se recorta a 280. */
+export const briefTextSchema = z.string().trim().max(280);
 
 export const seoDataSchema = z.strictObject({
   metaTitle: text.max(60),
@@ -66,6 +84,7 @@ export const feedVariantSchema = z.strictObject({
   /** Copy del post adaptado por red: mismo asset 4:5, texto propio. */
   captionInstagram: text.max(280),
   captionFacebook: text.max(280),
+  layoutLayers: layoutLayersSchema.optional(),
 });
 export type FeedVariant = z.infer<typeof feedVariantSchema>;
 
@@ -78,6 +97,7 @@ export const storyCopySchema = z.strictObject({
   artDirection: text.max(800),
   hook: text.max(40),
   cta: text.max(30),
+  layoutLayers: layoutLayersSchema.optional(),
 });
 export type StoryCopy = z.infer<typeof storyCopySchema>;
 
@@ -210,7 +230,13 @@ export const visualReviewSchema = z.strictObject({
   status: z.enum(["reviewed", "needs_review", "unavailable", "not_generated"]),
   summary: text.max(350),
   issues: z.array(visualIssueSchema).max(8),
-  retryCount: z.number().int().min(0).max(1),
+  retryCount: z.number().int().min(0).max(2),
+  correctionReport: z.object({
+    outcome: z.enum(["corrected", "unresolved", "unavailable"]),
+    attempted: z.array(text.max(300)).max(8),
+    verified: z.array(text.max(300)).max(8),
+    pending: z.array(text.max(300)).max(8),
+  }).optional(),
   checks: z.array(reviewCheckSchema).max(4).default([]),
   /** Motivo del reintento (primer issue crítico) cuando hubo regeneración. */
   retryReason: text.max(300).nullable().default(null),
@@ -222,6 +248,7 @@ export const stageEventSchema = z.strictObject({
   stage: stageNameSchema,
   status: z.enum(["running", "done", "error"]),
   ms: z.number().int().min(0).default(0),
+  detail: text.max(240).optional(),
 });
 export type StageEvent = z.infer<typeof stageEventSchema>;
 
@@ -283,8 +310,7 @@ export const campaignResultSchema = z.strictObject({
   storyReview: visualReviewSchema.nullable().default(null),
   /**
    * Dimensiones REALES medidas en píxeles del arte IA entregado (`null` si la
-   * pieza es composición local o no se pudo medir). El export del cliente
-   * normaliza a 1080x1350 (feed) / 1080x1920 (story) en todos los casos.
+   * pieza es composición local o no se pudo medir). El cliente conserva la resolución nativa sin recortar ni rellenar.
    */
   artworkDims: z.strictObject({
     feed: z.array(z.strictObject({ width: z.number().int().min(1), height: z.number().int().min(1) }).nullable()).length(2),
@@ -305,6 +331,7 @@ export const campaignResultSchema = z.strictObject({
   allowedClaims: z.array(text.max(120)).max(8).default([]),
   carouselReviews: z.array(visualReviewSchema).length(4).nullable(),
   diversityReview: visualReviewSchema,
+  refinements: z.array(z.object({ id: z.string(), placement: z.enum(["feed-0", "feed-1", "story"]), instruction: z.string().max(800), at: z.number(), beforeUrl: z.string().nullable(), afterUrl: z.string(), review: visualReviewSchema, mode: z.enum(["refine", "regenerate"]).optional(), draft: z.boolean().optional() })).max(50).default([]),
   timings: pipelineTimingsSchema,
   stageEvents: z.array(stageEventSchema).min(3),
 });

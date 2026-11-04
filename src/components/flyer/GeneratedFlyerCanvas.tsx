@@ -1,176 +1,316 @@
 "use client";
 
 import { forwardRef, memo, useEffect, useImperativeHandle, useRef } from "react";
-import { fitStrategy } from "@/lib/flyer/fit";
 import { loadImageElement } from "@/lib/flyer/image-loader";
+import { pickLogoCorner, sampleBusyGrid, type BusyGrid } from "@/lib/flyer/layer-render";
 import type { FlyerCanvasHandle } from "./FlyerCanvas";
 
-type GeneratedFlyerCanvasProps = {
-  /** Póster TERMINADO generado por el modelo de imagen (data URL). La
-   * tipografía, el producto y los recursos gráficos ya viven horneados en
-   * los píxeles: acá NO se compone nada encima — lo que se ve es lo que se
-   * descarga. */
+type Props = {
   artworkUrl: string;
-  /** Tamaño EXACTO de exportación del placement (feed 1080x1350, story
-   * 1080x1920). El lienzo siempre sale en estas dimensiones. */
   targetWidth: number;
   targetHeight: number;
-  /** Proporción CSS del placement ("4 / 5" feed/carrusel, "9 / 16" story). */
   aspect?: string;
   className?: string;
-  /** Informa cómo se encuadró el arte (para el badge "Arte extendido"). */
   onRender?: (info: { extended: boolean; srcWidth: number; srcHeight: number }) => void;
-  /** Avisa cuando el primer frame quedó dibujado (para habilitar descarga/zoom). */
   onReadyChange?: (ready: boolean) => void;
-  /** La imagen no se pudo cargar: el padre muestra toast en vez de negro. */
   onError?: (message: string) => void;
+  /** Logo real de la marca: se compone nítido en la esquina más libre (inferior o superior). */
+  logoUrl?: string | null;
+  /** Esquina inferior fijada por el usuario (auto = la más libre). */
+  logoPosition?: "auto" | "left" | "right" | null;
 };
 
-export const GeneratedFlyerCanvas = memo(
-  forwardRef<FlyerCanvasHandle, GeneratedFlyerCanvasProps>(function GeneratedFlyerCanvas(
-    { artworkUrl, targetWidth, targetHeight, className, aspect = "4 / 5", onRender, onReadyChange, onError },
-    ref,
-  ) {
+/** Muse owns the entire design. Canvas only exports its unchanged pixels at native resolution. */
+export const GeneratedFlyerCanvas = memo(forwardRef<FlyerCanvasHandle, Props>(function GeneratedFlyerCanvas(
+  { artworkUrl, className, onRender, onReadyChange, onError, logoUrl, logoPosition }, ref,
+) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const readyRef = useRef(false);
-  // Callbacks por ref: si entraran en las deps, cada render del padre
-  // recargaría la imagen y el canvas parpadearía en loop.
-  const callbacksRef = useRef({ onRender, onReadyChange, onError });
-  callbacksRef.current = { onRender, onReadyChange, onError };
-  const setReady = (ready: boolean) => {
-    readyRef.current = ready;
-    callbacksRef.current.onReadyChange?.(ready);
-  };
-
+  const callbacks = useRef({ onRender, onReadyChange, onError });
+  callbacks.current = { onRender, onReadyChange, onError };
   useImperativeHandle(ref, () => ({
-    toPng: () => (readyRef.current ? (canvasRef.current?.toDataURL("image/png") ?? null) : null),
-    download: (filename: string) => {
-      const canvas = canvasRef.current;
-      if (!canvas || !readyRef.current) return;
-      const anchor = document.createElement("a");
-      anchor.href = canvas.toDataURL("image/png");
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-    },
+    toPng: () => readyRef.current ? canvasRef.current?.toDataURL("image/png") ?? null : null,
     isReady: () => readyRef.current,
+    download: (filename) => {
+      if (!readyRef.current || !canvasRef.current) return;
+      const anchor = document.createElement("a");
+      anchor.href = canvasRef.current.toDataURL("image/png"); anchor.download = filename;
+      document.body.appendChild(anchor); anchor.click(); anchor.remove();
+    },
   }));
-
   useEffect(() => {
-    const canvas = canvasRef.current;
-    const ctx = canvas?.getContext("2d");
-    if (!canvas || !ctx) return;
-
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-    setReady(false);
     let cancelled = false;
-    // El await es load-bearing: dibujar/exportar antes del onload sale negro.
-    void loadImageElement(artworkUrl).then(
-      (image) => {
-        if (cancelled) return;
-        const extended = drawExact(ctx, image, targetWidth, targetHeight);
-        callbacksRef.current.onRender?.({ extended, srcWidth: image.naturalWidth, srcHeight: image.naturalHeight });
-        setReady(true);
-      },
-      (error: unknown) => {
-        if (cancelled) return;
-        setReady(false);
-        callbacksRef.current.onError?.(error instanceof Error ? error.message : "No se pudo cargar la imagen para exportar.");
-      },
-    );
+    readyRef.current = false;
+    callbacks.current.onReadyChange?.(false);
+    void Promise.all([
+      loadImageElement(artworkUrl),
+      logoUrl ? loadImageElement(logoUrl).catch(() => null) : Promise.resolve(null),
+    ]).then(([image, logo]) => {
+      if (cancelled) return;
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext("2d");
+      if (!canvas || !ctx) return;
+      canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+      ctx.drawImage(image, 0, 0);
+      if (logo) drawBrandLogo(ctx, logo, canvas.width, canvas.height, logoPosition === "left" || logoPosition === "right" ? logoPosition : null);
+      readyRef.current = true;
+      callbacks.current.onRender?.({ extended: false, srcWidth: canvas.width, srcHeight: canvas.height });
+      callbacks.current.onReadyChange?.(true);
+    }).catch((error: unknown) => {
+      if (!cancelled) callbacks.current.onError?.(error instanceof Error ? error.message : "No se pudo cargar la pieza.");
+    });
+    return () => { cancelled = true; };
+  }, [artworkUrl, logoUrl, logoPosition]);
+  return <canvas ref={canvasRef} className={className} aria-label="Pieza completa diseñada por Muse Image" style={{ width: "100%", height: "auto", display: "block" }} />;
+}));
 
-    return () => {
-      cancelled = true;
+type PreparedLogo = {
+  source: CanvasImageSource;
+  transparentSource: CanvasImageSource | null;
+  width: number;
+  height: number;
+  opaqueBox: boolean;
+  isWhiteBg: boolean;
+};
+
+/**
+ * Si el logo subido viene dentro de un cuadrado blanco/uniforme opaco con mucho
+ * margen vacío (típico JPG/PNG como perfil de Instagram), recorta el excedente
+ * dejando un padding equilibrado alrededor de la tinta real y genera además una
+ * versión con el fondo blanco knockeado a transparente (`transparentSource`)
+ * para que sobre fondos claros el logo se apoye limpio sin parche cuadrado.
+ */
+function prepareLogoBadge(logo: HTMLImageElement): PreparedLogo {
+  const iw = logo.naturalWidth || 1;
+  const ih = logo.naturalHeight || 1;
+  try {
+    const off = document.createElement("canvas");
+    off.width = iw;
+    off.height = ih;
+    const octx = off.getContext("2d");
+    if (!octx) return { source: logo, transparentSource: null, width: iw, height: ih, opaqueBox: false, isWhiteBg: false };
+    octx.drawImage(logo, 0, 0);
+    const { data } = octx.getImageData(0, 0, iw, ih);
+    const sample = (x: number, y: number) => {
+      const i = (y * iw + x) * 4;
+      return [data[i], data[i + 1], data[i + 2], data[i + 3]] as const;
     };
-  }, [artworkUrl, targetWidth, targetHeight]);
+    const corners = [
+      sample(0, 0),
+      sample(iw - 1, 0),
+      sample(0, ih - 1),
+      sample(iw - 1, ih - 1),
+    ];
+    const opaqueCorners = corners.every((c) => c[3] >= 240);
+    if (!opaqueCorners) {
+      return { source: logo, transparentSource: null, width: iw, height: ih, opaqueBox: false, isWhiteBg: false };
+    }
+    const [br, bg, bb] = corners[0];
+    const uniformCorners = corners.every(
+      (c) => Math.abs(c[0] - br) + Math.abs(c[1] - bg) + Math.abs(c[2] - bb) < 36,
+    );
+    if (!uniformCorners) {
+      return { source: logo, transparentSource: null, width: iw, height: ih, opaqueBox: true, isWhiteBg: false };
+    }
+    const isWhiteBg = br >= 235 && bg >= 235 && bb >= 235;
 
-  return (
-    <canvas
-      ref={canvasRef}
-      className={className}
-      style={{ width: "100%", height: "auto", display: "block", aspectRatio: aspect }}
-    />
+    let minX = iw;
+    let minY = ih;
+    let maxX = 0;
+    let maxY = 0;
+    for (let y = 0; y < ih; y++) {
+      for (let x = 0; x < iw; x++) {
+        const i = (y * iw + x) * 4;
+        const diff = Math.abs(data[i] - br) + Math.abs(data[i + 1] - bg) + Math.abs(data[i + 2] - bb);
+        if (diff > 32) {
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    if (maxX <= minX || maxY <= minY) {
+      return { source: logo, transparentSource: null, width: iw, height: ih, opaqueBox: true, isWhiteBg };
+    }
+    const contentW = maxX - minX + 1;
+    const contentH = maxY - minY + 1;
+    const padX = Math.round(contentW * 0.18);
+    const padY = Math.round(contentH * 0.18);
+    const sx = Math.max(0, minX - padX);
+    const sy = Math.max(0, minY - padY);
+    const sw = Math.min(iw - sx, contentW + padX * 2);
+    const sh = Math.min(ih - sy, contentH + padY * 2);
+
+    const cropped = document.createElement("canvas");
+    cropped.width = sw;
+    cropped.height = sh;
+    const cctx = cropped.getContext("2d");
+    if (!cctx) return { source: logo, transparentSource: null, width: iw, height: ih, opaqueBox: true, isWhiteBg };
+    cctx.drawImage(off, sx, sy, sw, sh, 0, 0, sw, sh);
+
+    let transparentSource: CanvasImageSource | null = null;
+    if (isWhiteBg) {
+      const matte = document.createElement("canvas");
+      matte.width = sw;
+      matte.height = sh;
+      const mctx = matte.getContext("2d");
+      if (mctx) {
+        const imgData = cctx.getImageData(0, 0, sw, sh);
+        const px = imgData.data;
+        for (let p = 0; p < px.length; p += 4) {
+          const diff = Math.max(Math.abs(px[p] - br), Math.abs(px[p + 1] - bg), Math.abs(px[p + 2] - bb));
+          if (diff <= 14) {
+            px[p + 3] = 0;
+          } else if (diff < 72) {
+            px[p + 3] = Math.round(((diff - 14) / (72 - 14)) * px[p + 3]);
+          }
+        }
+        mctx.putImageData(imgData, 0, 0);
+        transparentSource = matte;
+      }
+    }
+    return { source: cropped, transparentSource, width: sw, height: sh, opaqueBox: true, isWhiteBg };
+  } catch {
+    return { source: logo, transparentSource: null, width: iw, height: ih, opaqueBox: false, isWhiteBg: false };
+  }
+}
+
+/** Mediana de luminancia (0..1) del rectángulo donde caerá el logo. */
+function cornerLuminance(ctx: CanvasRenderingContext2D, dx: number, dy: number, w: number, h: number, W: number, H: number): number {
+  try {
+    const x0 = Math.max(0, Math.min(W - 1, Math.round(dx)));
+    const y0 = Math.max(0, Math.min(H - 1, Math.round(dy)));
+    const rw = Math.max(1, Math.min(W - x0, Math.round(w)));
+    const rh = Math.max(1, Math.min(H - y0, Math.round(h)));
+    const { data } = ctx.getImageData(x0, y0, rw, rh);
+    const samples: number[] = [];
+    const stepX = Math.max(1, Math.floor(rw / 10));
+    const stepY = Math.max(1, Math.floor(rh / 10));
+    for (let sy = 0; sy < rh; sy += stepY) {
+      for (let sx = 0; sx < rw; sx += stepX) {
+        const i = (sy * rw + sx) * 4;
+        samples.push((data[i] * 0.2126 + data[i + 1] * 0.7152 + data[i + 2] * 0.0722) / 255);
+      }
+    }
+    samples.sort((a, b) => a - b);
+    return samples[Math.floor(samples.length / 2)] ?? 0.7;
+  } catch {
+    return 0.7;
+  }
+}
+
+/**
+ * Logo real de la marca, compuesto nítido (el modelo nunca lo dibuja para
+ * no deformarlo): evalúa las 4 esquinas y elige la más libre, salvo esquina
+ * fijada por el usuario. Si el logo
+ * viene en fondo blanco y la esquina elegida es clara, elimina la caja blanca
+ * para apoyar la tipografía limpia sobre la foto; si la esquina es oscura,
+ * dibuja una pastilla redondeada compacta.
+ */
+function drawBrandLogo(ctx: CanvasRenderingContext2D, logo: HTMLImageElement, W: number, H: number, forcedSide?: "left" | "right" | null) {
+  const prepared = prepareLogoBadge(logo);
+  const iw = prepared.width || 1;
+  const ih = prepared.height || 1;
+  const scale = Math.min((W * 0.145) / iw, (H * 0.048) / ih);
+  if (!Number.isFinite(scale) || scale <= 0) return;
+  const w = iw * scale;
+  const h = ih * scale;
+  const story = H / W > 1.5;
+  const grid = gridOf(ctx, W, H);
+  const wPct = (w / W) * 100;
+  const hPct = (h / H) * 100;
+  let picked = pickLogoCorner(
+    grid,
+    wPct,
+    hPct,
+    3,
+    story ? 87 : 100 - 2.5,
+    story ? 15 : 3,
+    forcedSide ?? null,
   );
-  }),
-);
-
-/**
- * Exportación a dimensiones EXACTAS del placement, sin deformar jamás.
- * Devuelve `true` si hubo que extender (mismatch de aspecto) para que la UI
- * lo señalice. Ver `fitStrategy` (testeado) para la decisión crop/extend.
- */
-function drawExact(
-  ctx: CanvasRenderingContext2D,
-  image: HTMLImageElement,
-  W: number,
-  H: number,
-): boolean {
-  const iw = image.naturalWidth || W;
-  const ih = image.naturalHeight || H;
-  const { mode } = fitStrategy(iw, ih, W, H);
-
-  if (mode === "crop") {
-    const scale = Math.max(W / iw, H / ih);
-    const dw = iw * scale;
-    const dh = ih * scale;
-    ctx.drawImage(image, (W - dw) / 2, (H - dh) / 2, dw, dh);
-    return false;
+  // En Story (9:16), el titular siempre empieza entre el 13% y el 25% superior
+  // (justo donde cae minTopPct = 15). Si el logo subió a una esquina superior
+  // o si el 87% inferior está ocupado por un botón CTA ancho, probamos también
+  // la esquina superior alta (3.5% del alto, encima del titular) y el borde
+  // inferior bajo (94% del alto, debajo del CTA) para elegir la zona más limpia.
+  if (story && !forcedSide && (picked.corner === "top-left" || picked.corner === "top-right" || picked.busy > 0.09)) {
+    const highTop = pickLogoCorner(grid, wPct, hPct, 3, 87, 3.5, null);
+    if (highTop.busy <= picked.busy + 0.01) {
+      picked = highTop;
+    }
   }
-
-  gradientExtend(ctx, image, iw, ih, W, H);
-  return true;
-}
-
-/**
- * Extensión con degradado muestreado del propio arte (plan B intencional, no
- * relleno borroso): el fondo es un degradado vertical entre el color medio
- * del borde superior e inferior del arte, levemente oscurecido, y encima va
- * el arte nítido completo, encajado y centrado, sin recortes ni deformación.
- */
-function gradientExtend(
-  ctx: CanvasRenderingContext2D,
-  image: HTMLImageElement,
-  iw: number,
-  ih: number,
-  W: number,
-  H: number,
-) {
-  const top = edgeColor(image, "top");
-  const bottom = edgeColor(image, "bottom");
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, shade(top, 0.88));
-  g.addColorStop(1, shade(bottom, 0.88));
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
-
-  const fscale = Math.min(W / iw, H / ih);
-  const fw = iw * fscale;
-  const fh = ih * fscale;
-  ctx.drawImage(image, (W - fw) / 2, (H - fh) / 2, fw, fh);
-}
-
-/** Color medio del borde superior o inferior del arte (muestreo 16x16). */
-function edgeColor(image: HTMLImageElement, edge: "top" | "bottom"): [number, number, number] {
-  const sample = document.createElement("canvas");
-  sample.width = 16;
-  sample.height = 16;
-  const sctx = sample.getContext("2d", { willReadFrequently: true });
-  if (!sctx) return [21, 24, 31];
-  sctx.drawImage(image, 0, 0, 16, 16);
-  const row = edge === "top" ? 0 : 15;
-  const data = sctx.getImageData(0, row, 16, 1).data;
-  let r = 0, green = 0, b = 0;
-  for (let x = 0; x < 16; x++) {
-    r += data[x * 4];
-    green += data[x * 4 + 1];
-    b += data[x * 4 + 2];
+  const { x, y } = picked;
+  const dx = (x / 100) * W;
+  const dy = (y / 100) * H;
+  const luma = cornerLuminance(ctx, dx, dy, w, h, W, H);
+  ctx.save();
+  if (prepared.isWhiteBg && prepared.transparentSource && luma >= 0.48) {
+    // Esquina clara: dibujamos la tinta directa sin parche cuadrado blanco
+    ctx.shadowColor = "rgba(255,255,255,0.65)";
+    ctx.shadowBlur = Math.max(4, W * 0.005);
+    ctx.shadowOffsetY = 0;
+    ctx.drawImage(prepared.transparentSource, dx, dy, w, h);
+  } else if (prepared.opaqueBox) {
+    ctx.shadowColor = "rgba(0,0,0,0.26)";
+    ctx.shadowBlur = Math.max(6, W * 0.01);
+    ctx.shadowOffsetY = Math.max(2, H * 0.0025);
+    const r = Math.min(w, h) * 0.26;
+    ctx.beginPath();
+    ctx.roundRect(dx, dy, w, h, r);
+    ctx.fillStyle = "rgba(255,255,255,0.96)";
+    ctx.fill();
+    ctx.shadowColor = "transparent";
+    ctx.clip();
+    ctx.drawImage(prepared.source, dx, dy, w, h);
+  } else {
+    ctx.shadowColor = "rgba(0,0,0,0.28)";
+    ctx.shadowBlur = Math.max(6, W * 0.01);
+    ctx.shadowOffsetY = Math.max(2, H * 0.0025);
+    ctx.drawImage(prepared.source, dx, dy, w, h);
   }
-  return [Math.round(r / 16), Math.round(green / 16), Math.round(b / 16)];
+  ctx.restore();
 }
 
-function shade([r, g, b]: [number, number, number], factor: number): string {
-  const c = (v: number) => Math.max(0, Math.min(255, Math.round(v * factor)));
-  return `rgb(${c(r)},${c(g)},${c(b)})`;
+/** Mapa de ocupación del arte ya dibujado; incluye gradiente de luminancia y
+ * saturación cromática para detectar tanto titulares como botones CTA de color. */
+function gridOf(ctx: CanvasRenderingContext2D, W: number, H: number): BusyGrid {
+  try {
+    const { data } = ctx.getImageData(0, 0, W, H);
+    const base = sampleBusyGrid((x, y) => {
+      const o = (y * W + x) * 4;
+      return (data[o] * 0.2126 + data[o + 1] * 0.7152 + data[o + 2] * 0.0722) / 255;
+    }, W, H);
+    const { cols, rows } = base;
+    const cw = W / cols;
+    const ch = H / rows;
+    const satSums = new Array<number>(cols * rows).fill(0);
+    const counts = new Array<number>(cols * rows).fill(0);
+    for (let y = 1; y < H - 1; y += 3) {
+      for (let x = 1; x < W - 1; x += 3) {
+        const o = (y * W + x) * 4;
+        const r = data[o];
+        const g = data[o + 1];
+        const b = data[o + 2];
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        // Croma normalizado sobre 255: detecta botones y bloques de color real
+        // (ej. azul #0d74b8 o lima #b8f25c → chroma > 0.55) sin confundir
+        // sombras oscuras entintadas (ej. negro rojizo RGB 38,14,14 → chroma 0.09).
+        const chroma = max > 85 ? (max - min) / 255 : 0;
+        const idx = Math.min(rows - 1, Math.floor(y / ch)) * cols + Math.min(cols - 1, Math.floor(x / cw));
+        satSums[idx] += chroma;
+        counts[idx] += 1;
+      }
+    }
+    for (let i = 0; i < base.cells.length; i++) {
+      const avgChroma = counts[i] ? satSums[i] / counts[i] : 0;
+      if (avgChroma > 0.36) {
+        base.cells[i] += (avgChroma - 0.36) * 0.75;
+      }
+    }
+    return base;
+  } catch {
+    return { cols: 1, rows: 1, cells: [Number.POSITIVE_INFINITY] };
+  }
 }

@@ -19,6 +19,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (!projectExists(id)) return Response.json({ error: "Proyecto no encontrado." }, { status: 404 });
   const form = await request.formData().catch(() => null);
   if (!form) return Response.json({ error: "El body debe ser multipart/form-data." }, { status: 400 });
+  // type=source (foto de producto, default) o type=logo (logo del kit de marca).
+  const kind = form.get("type") === "logo" ? "logo" : "source";
 
   const saved = [];
   for (const entry of form.getAll("file")) {
@@ -35,7 +37,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const asset = createAsset({
       campaignId: null,
       projectId: id,
-      type: "source",
+      type: kind,
       url,
       metadataJson: JSON.stringify({ filename: entry.name, mime: entry.type, bytes: entry.size }),
     });

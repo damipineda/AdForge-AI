@@ -3,11 +3,19 @@
 import { useCallback, useRef, useState } from "react";
 import { Loader2, Plus, Send, SlidersHorizontal, Square, X } from "lucide-react";
 import { clsx } from "clsx";
-import type { Locale, Placement } from "@/lib/schema/campaign";
+import type { BriefFocus, Locale, Placement } from "@/lib/schema/campaign";
+import { useI18n } from "@/lib/i18n";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_FILES = 4;
 const ALLOWED_MIME = ["image/jpeg", "image/png", "image/webp"];
+
+const FOCUS_CHIPS: Array<{ id: BriefFocus; emoji: string }> = [
+  { id: "product", emoji: "🛒" },
+  { id: "promo", emoji: "🏷️" },
+  { id: "personal", emoji: "👤" },
+  { id: "launch", emoji: "✨" },
+];
 
 export type MerchantInput = { price: string };
 
@@ -18,6 +26,8 @@ type ComposerBarProps = {
   placements: Placement[];
   merchant: MerchantInput;
   groupMode: boolean;
+  brief: string;
+  focus: BriefFocus | null;
   isRunning: boolean;
   error: string | null;
   onFilesChange: (files: File[]) => void;
@@ -25,15 +35,12 @@ type ComposerBarProps = {
   onPlacementsChange: (placements: Placement[]) => void;
   onMerchantChange: (merchant: MerchantInput) => void;
   onGroupModeChange: (group: boolean) => void;
+  onBriefChange: (brief: string) => void;
+  onFocusChange: (focus: BriefFocus | null) => void;
   onSubmit: () => void;
   onCancel: () => void;
 };
 
-/**
- * Barra flotante de entrada estilo chat, fija al fondo del panel central:
- * adjuntar (+) a la izquierda, enviar a la derecha y ajustes (mercado,
- * piezas, precio, agrupar) en un popover compacto. Sin formularios largos.
- */
 export function ComposerBar({
   files,
   previewUrls,
@@ -41,6 +48,8 @@ export function ComposerBar({
   placements,
   merchant,
   groupMode,
+  brief,
+  focus,
   isRunning,
   error,
   onFilesChange,
@@ -48,9 +57,12 @@ export function ComposerBar({
   onPlacementsChange,
   onMerchantChange,
   onGroupModeChange,
+  onBriefChange,
+  onFocusChange,
   onSubmit,
   onCancel,
 }: ComposerBarProps) {
+  const { t } = useI18n();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -63,22 +75,22 @@ export function ComposerBar({
       const next = [...files];
       for (const candidate of Array.from(candidates)) {
         if (next.length >= MAX_FILES) {
-          setLocalError(`Máximo ${MAX_FILES} fotos por campaña.`);
+          setLocalError(t.composer.errMaxFiles(MAX_FILES));
           break;
         }
         if (!ALLOWED_MIME.includes(candidate.type)) {
-          setLocalError("Solo imágenes: JPG, PNG o WEBP.");
+          setLocalError(t.composer.errAllowedMime);
           continue;
         }
         if (candidate.size > MAX_BYTES) {
-          setLocalError(`Cada foto hasta ${MAX_BYTES / 1024 / 1024} MB.`);
+          setLocalError(t.composer.errMaxMb(MAX_BYTES / 1024 / 1024));
           continue;
         }
         next.push(candidate);
       }
       onFilesChange(next);
     },
-    [files, onFilesChange],
+    [files, onFilesChange, t.composer],
   );
 
   const showError = localError ?? error;
@@ -95,13 +107,13 @@ export function ComposerBar({
                 className="relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-night-rule-strong bg-night"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={url} alt={`Producto ${i + 1}`} className="h-full w-full object-cover" />
+                <img src={url} alt={t.composer.productAlt(i + 1)} className="h-full w-full object-cover" />
                 <button
                   type="button"
                   onClick={() => onFilesChange(files.filter((_, j) => j !== i))}
                   disabled={isRunning}
                   className="absolute right-0.5 top-0.5 rounded-full bg-night/85 p-0.5 text-paper-dim backdrop-blur transition-colors hover:text-danger disabled:opacity-40"
-                  aria-label={`Quitar foto ${i + 1}`}
+                  aria-label={t.composer.removePhotoAria(i + 1)}
                 >
                   <X className="h-3 w-3" />
                 </button>
@@ -116,7 +128,7 @@ export function ComposerBar({
         {settingsOpen && !isRunning && (
           <div className="block-in mx-3 mb-1 mt-3 grid grid-cols-1 gap-3 rounded-xl border border-night-rule bg-night p-3 sm:grid-cols-3">
             <label className="block text-xs text-paper-dim">
-              <span className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">Mercado</span>
+              <span className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">{t.composer.market}</span>
               <select
                 value={locale}
                 onChange={(e) => onLocaleChange(e.target.value as Locale)}
@@ -128,7 +140,7 @@ export function ComposerBar({
               </select>
             </label>
             <fieldset className="text-xs text-paper-dim">
-              <legend className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">Piezas</legend>
+              <legend className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">{t.composer.placements}</legend>
               <div className="mt-1.5 space-y-1.5">
                 <span className="flex items-center gap-2">
                   <input type="checkbox" defaultChecked disabled className="h-3.5 w-3.5 accent-emerald-400" />
@@ -144,19 +156,19 @@ export function ComposerBar({
                       )}
                       className="h-3.5 w-3.5 accent-emerald-400"
                     />
-                    {p === "story" ? "Story 9:16" : "Carrusel ×4"}
+                    {p === "story" ? "Story 9:16" : t.composer.carouselOption}
                   </label>
                 ))}
               </div>
             </fieldset>
             <div className="space-y-2.5">
               <label className="block text-xs text-paper-dim">
-                <span className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">Precio (opcional)</span>
+                <span className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">{t.composer.priceOptional}</span>
                 <input
                   type="text"
                   value={merchant.price}
                   onChange={(e) => onMerchantChange({ price: e.target.value })}
-                  placeholder="Gs. 35.000"
+                  placeholder={t.composer.pricePlaceholder}
                   maxLength={64}
                   className="mt-1.5 w-full rounded-md border border-night-rule-strong bg-night-panel px-2 py-1.5 text-sm text-paper placeholder:text-paper-muted focus:border-mint focus:outline-none"
                 />
@@ -169,7 +181,7 @@ export function ComposerBar({
                     onChange={(e) => onGroupModeChange(e.target.checked)}
                     className="h-3.5 w-3.5 accent-emerald-400"
                   />
-                  Flyer conjunto ({files.length})
+                  {t.composer.groupFlyer(files.length)}
                 </label>
               )}
             </div>
@@ -181,8 +193,44 @@ export function ComposerBar({
             {showError}
           </p>
         )}
+        {error && !isRunning && canSend && (
+          <button type="button" onClick={onSubmit} className="mx-4 mt-2 rounded border border-mint/40 px-3 py-1.5 text-xs text-mint">
+            {t.composer.retryWithPhotos}
+          </button>
+        )}
 
-        <div
+        {!isRunning && (
+          <div className="flex flex-wrap gap-1.5 px-3 pt-2.5">
+            {FOCUS_CHIPS.map(({ id, emoji }) => {
+              const active = focus === id;
+              const label = t.composer.focusLabels[id];
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => onFocusChange(active ? null : id)}
+                  aria-pressed={active}
+                  title={label}
+                  className={clsx(
+                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wider transition-colors",
+                    active
+                      ? "border-mint/60 bg-mint-soft text-mint"
+                      : "border-night-rule-strong text-paper-muted hover:border-mint/50 hover:text-paper",
+                  )}
+                >
+                  <span aria-hidden>{emoji}</span>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit();
+          }}
           onDragOver={(e) => {
             e.preventDefault();
             if (!isRunning) setDragging(true);
@@ -203,23 +251,25 @@ export function ComposerBar({
             onClick={() => inputRef.current?.click()}
             disabled={isRunning || files.length >= MAX_FILES}
             className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-mint-soft text-mint transition-colors hover:bg-mint hover:text-ink disabled:opacity-40"
-            aria-label="Adjuntar fotos de producto"
-            title="Adjuntar fotos (JPG · PNG · WEBP)"
+            aria-label={t.composer.attachAria}
+            title={t.composer.attachTitle}
           >
             <Plus className="h-5 w-5" />
           </button>
-          <button
-            type="button"
-            onClick={() => inputRef.current?.click()}
+          <input
+            type="text"
+            value={brief}
+            onChange={(e) => onBriefChange(e.target.value)}
             disabled={isRunning}
-            className="min-w-0 flex-1 truncate rounded-full px-2 py-2 text-left text-sm text-paper-muted transition-colors hover:text-paper-dim"
-          >
-            {isRunning
-              ? "Generando campaña…"
-              : files.length === 0
-                ? "Adjuntá fotos del producto o arrastralas aquí…"
-                : `${files.length}/${MAX_FILES} foto(s) lista(s) · Enter para generar`}
-          </button>
+            maxLength={280}
+            placeholder={
+              files.length === 0
+                ? t.composer.briefPlaceholderEmpty
+                : t.composer.briefPlaceholderWithFiles
+            }
+            aria-label={t.composer.briefAria}
+            className="min-w-0 flex-1 rounded-full bg-transparent px-2 py-2 text-sm text-paper placeholder:text-paper-muted focus:outline-none disabled:opacity-60"
+          />
           <span className="hidden shrink-0 font-mono text-[10px] text-paper-muted lg:inline">
             JPG·PNG·WEBP
           </span>
@@ -233,8 +283,8 @@ export function ComposerBar({
                 ? "border-mint/60 bg-mint-soft text-mint"
                 : "border-night-rule-strong text-paper-muted hover:border-mint/50 hover:text-paper",
             )}
-            aria-label="Ajustes de campaña"
-            title="Mercado, piezas y precio"
+            aria-label={t.composer.settingsAria}
+            title={t.composer.settingsTitle}
           >
             <SlidersHorizontal className="h-4 w-4" />
           </button>
@@ -243,15 +293,14 @@ export function ComposerBar({
               type="button"
               onClick={onCancel}
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-danger/15 text-danger transition-colors hover:bg-danger hover:text-paper"
-              aria-label="Cancelar generación"
-              title="Cancelar"
+              aria-label={t.composer.cancelAria}
+              title={t.composer.cancelTitle}
             >
               <Square className="h-4 w-4" />
             </button>
           ) : (
             <button
-              type="button"
-              onClick={onSubmit}
+              type="submit"
               disabled={!canSend}
               className={clsx(
                 "flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition-all",
@@ -259,8 +308,8 @@ export function ComposerBar({
                   ? "bg-mint text-ink hover:bg-mint-dark hover:text-paper"
                   : "cursor-not-allowed bg-night-rule text-paper-muted",
               )}
-              aria-label="Generar campaña"
-              title="Generar campaña"
+              aria-label={error ? t.composer.retryAria : t.composer.submitAria}
+              title={error ? t.composer.retryTitle : t.composer.submitTitle}
             >
               {isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </button>
@@ -276,13 +325,13 @@ export function ComposerBar({
               e.target.value = "";
             }}
           />
-        </div>
+        </form>
       </div>
       <p className="mt-1 text-center font-mono text-[10px] text-paper-muted">
-        La imagen final no lleva links ni botones web.
+        {t.composer.noWebLinksNote}
       </p>
       <p className="mt-1 text-center text-[11px] text-paper-muted">
-        La foto original se envía al proveedor de IA. Antes de subirla, ocultá patentes, documentos y otros datos que no quieras compartir.
+        {t.composer.privacyDisclaimer}
       </p>
     </div>
   );

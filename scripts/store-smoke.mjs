@@ -44,11 +44,17 @@ const { campaign, assets } = await api("/api/campaigns", {
     status: "done",
     resultJson: JSON.stringify(fakeResult),
     sourceAssetIds: [uploaded[0].id],
+    brief: "Cama matrimonial en promo",
+    focus: "promo",
     flyers: [{ slot: "feed-0", type: "feed", dataUrl: fakeResult.feedImages[0], filename: "AFG-SMOKE-feed-V1.png" }],
   }),
 });
 console.log("campaign:", campaign.id, "| assets:", assets.map((a) => `${a.type}:${a.url}`).join(", "));
 if (campaign.resultJson.includes("data:")) throw new Error("resultJson aún contiene data URLs");
+if (campaign.brief !== "Cama matrimonial en promo" || campaign.focus !== "promo") {
+  throw new Error(`brief/focus no persistidos: ${campaign.brief} / ${campaign.focus}`);
+}
+console.log("brief/focus ok:", campaign.brief, "/", campaign.focus);
 
 const full = await api(`/api/campaigns/${campaign.id}`);
 console.log("restore ok:", full.campaign.id === campaign.id, "| linked assets:", full.assets.length);
@@ -73,7 +79,7 @@ function learningResult() {
     retryCount: failed ? 1 : 0,
     checks: [
       { id: "dimensions", passed: true, detail: "1080x1350 4:5" },
-      { id: "safe_zones", passed: !failed, detail: failed ? "CTA dentro del 22% inferior" : "Zonas libres" },
+      { id: "safe_zones", passed: !failed, detail: failed ? "CTA dentro del 13% inferior" : "Zonas libres" },
       { id: "fidelity", passed: true, detail: "Envase fiel" },
       { id: "coherence", passed: true, detail: "Escena coherente" },
     ],
@@ -206,6 +212,31 @@ if (logged.marked < 1) throw new Error("La señal de descarga no marcó learning
 console.log("export signal ok:", logged.marked, "learnings marcados");
 
 for (const id of learningIds) await api(`/api/campaigns/${id}`, { method: "DELETE" });
+
+// Kit de marca: CRUD + logo con tipo + validación de colores.
+const emptyKit = await api(`/api/projects/${project.id}/brand-kit`);
+if (emptyKit.kit !== null) throw new Error("El kit debe arrancar ausente");
+const logoForm = new FormData();
+logoForm.append("type", "logo");
+logoForm.append("file", new Blob([tinyPng], { type: "image/png" }), "logo.png");
+const { assets: logos } = await api(`/api/projects/${project.id}/assets`, { method: "POST", body: logoForm });
+if (logos[0].type !== "logo") throw new Error("El asset del logo debe tener type=logo");
+const badKit = await fetch(`${BASE}/api/projects/${project.id}/brand-kit`, {
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "X", primaryColor: "rojo", secondaryColor: "#222222", accentColor: "#333333", logoAssetId: null }),
+});
+if (badKit.status !== 422) throw new Error("Color inválido debe dar 422");
+const { kit } = await api(`/api/projects/${project.id}/brand-kit`, {
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: "Tienda Smoke", primaryColor: "#123456", secondaryColor: "#222222", accentColor: "#ABCDEF", logoAssetId: logos[0].id }),
+});
+if (!kit.id || kit.logoAssetId !== logos[0].id) throw new Error("El kit no guardó el logo");
+const withLogo = await api(`/api/projects/${project.id}/brand-kit`);
+if (!withLogo.logo || withLogo.logo.id !== logos[0].id) throw new Error("El GET debe devolver el logo");
+console.log("brand kit ok:", kit.name, kit.primaryColor, "logo:", withLogo.logo.url);
+
 await api(`/api/campaigns/${campaign.id}`, { method: "DELETE" });
 await api(`/api/projects/${project.id}`, { method: "DELETE" });
 const { projects } = await api("/api/projects");

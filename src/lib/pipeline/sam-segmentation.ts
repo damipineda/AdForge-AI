@@ -1,5 +1,5 @@
 import type { BackgroundRecommendation, ImageAsset, PhotoDesignData, Segmentation, StyleArchetype } from "@/lib/schema/campaign";
-import { bufferToBase64 } from "./image";
+import { toAnalysisImage } from "./analysis-image";
 import { llmJson } from "./llm";
 import { toSegmentation, type Provider } from "./provider";
 
@@ -30,10 +30,10 @@ export type SamOutput = {
  * endpoint de máscaras en la API (ver el encabezado de `meta.ts`).
  */
 export async function runSam(input: SamInput, provider: Provider): Promise<SamOutput> {
-  return provider === "demo" ? runDemo(input) : runVision(input);
+  return provider === "demo" ? runDemo() : runVision(input);
 }
 
-async function runDemo(_input: SamInput): Promise<SamOutput> {
+async function runDemo(): Promise<SamOutput> {
   return {
     cutout: { slot: "cutout", url: "/demo/cutout.svg", sourceModel: "fixtures demo" },
     segmentation: { x: 0.15, y: 0.1, width: 0.7, height: 0.8 },
@@ -104,8 +104,10 @@ async function runVision(input: SamInput): Promise<SamOutput> {
     "7) backgroundColorHex: si backgroundMode es 'solid', el HEX del plano (derivado del producto o neutro que contraste); si no, \"\".\n" +
     "8) backgroundReason: una frase (<=200 chars) que justifique la decisión de fondo; si es 'solid', cita el choque concreto.";
 
+  // La pasada de visión recibe la copia de análisis (1024px, JPEG 80):
+  // el crudo pesado solo enlentece el upload y dispara timeouts.
   const raw = await llmJson<SamVisionRaw>(prompt, {
-    image: { base64: bufferToBase64(input.bytes), mimeType: input.mimeType },
+    image: await toAnalysisImage(input.bytes, input.mimeType),
     schema: samResponseSchema,
   });
 

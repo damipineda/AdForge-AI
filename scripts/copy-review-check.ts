@@ -27,7 +27,7 @@ async function run() {
   const askDetails = await reviewCampaignCopy(input, "meta", async () => ({ summary: "OK", feed: [{ ...valid[0], cta: "Pedí detalles del termo" }, valid[1]] }));
   assert.equal(askDetails.copyReview.status, "reviewed");
   const purchase = await reviewCampaignCopy(input, "meta", async () => ({ summary: "OK", feed: [{ ...valid[0], cta: "Comprá ahora" }, valid[1]] }));
-  assert.equal(purchase.copyReview.status, "unavailable");
+  assert.equal(purchase.copyReview.status, "reviewed", "un CTA de compra sin URL inventada está permitido por la política comercial actual");
   let tries = 0;
   const weak = await reviewCampaignCopy(input, "meta", async () => { tries++; return { summary: "OK", feed: [{ ...valid[0], cta: "Conocé más" }, valid[1]] }; });
   assert.equal(tries, 2, "el copy débil recibe un intento de reparación");

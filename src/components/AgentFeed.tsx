@@ -4,21 +4,12 @@ import { useEffect, useState } from "react";
 import { Check, LoaderCircle, X } from "lucide-react";
 import { clsx } from "clsx";
 import type { StageKey, StageTracker } from "./ProgressBar";
+import { useI18n } from "@/lib/i18n";
 
 type Step = { key: StageKey; label: string };
 
-const STEPS: Step[] = [
-  { key: "sam", label: "🔍 Extrayendo ADN visual y segmentando con SAM 3.1..." },
-  { key: "museSpark", label: "🧠 Muse Spark planificando dirección de arte y copywriting AIDA..." },
-  { key: "museImage", label: "🎨 Muse Image renderizando piezas nativas en 3 planos..." },
-  { key: "review", label: "👁️ Agente Crítico de Visión auditando proporciones y safe-zones..." },
-];
+const STEP_KEYS: StageKey[] = ["sam", "museSpark", "museImage", "review"];
 
-/**
- * Feedback en vivo estilo terminal/agente autónomo: los pasos aparecen uno a
- * uno a medida que el SSE los activa, con cursor parpadeante en el paso en
- * curso y ms reales al completar. En `compact` resume en una línea.
- */
 export function AgentFeed({
   tracker,
   isRunning,
@@ -30,16 +21,19 @@ export function AgentFeed({
   total?: number;
   compact?: boolean;
 }) {
-  const started = STEPS.filter((s) => tracker[s.key] !== "idle");
+  const { t } = useI18n();
+  const steps: Step[] = STEP_KEYS.map((key) => ({ key, label: t.agentFeed.steps[key] }));
+  const started = steps.filter((s) => tracker[s.key] !== "idle");
   const done = started.filter((s) => tracker[s.key] === "done").length;
+  const failed = started.some((s) => tracker[s.key] === "error");
 
   if (compact) {
     return (
       <div className="flex min-w-0 items-center gap-2 overflow-hidden rounded-xl border border-night-rule bg-night-panel px-4 py-2.5 font-mono text-[11px] text-paper-muted">
-        <Check className="h-3.5 w-3.5 shrink-0 text-mint" />
+        {failed ? <X className="h-3.5 w-3.5 shrink-0 text-danger" /> : <Check className="h-3.5 w-3.5 shrink-0 text-mint" />}
         <span className="truncate">
-          ✓ {done}/{STEPS.length} agentes
-          {typeof total === "number" ? ` · ${total} ms total` : ""}
+          {failed ? t.agentFeed.failedCompact : t.agentFeed.agentsDoneCompact(done, steps.length)}
+          {typeof total === "number" ? ` · ${t.agentFeed.totalMs(total)}` : ""}
         </span>
       </div>
     );
@@ -54,22 +48,22 @@ export function AgentFeed({
             <span className="h-2.5 w-2.5 rounded-full bg-signal/70" />
             <span className="h-2.5 w-2.5 rounded-full bg-mint/70" />
           </span>
-          Agentes en vivo
+          {t.agentFeed.liveHeader}
         </span>
-        <LiveElapsed isRunning={isRunning} total={total} />
+        <LiveElapsed isRunning={isRunning} total={total} failed={failed} />
       </div>
       <ol className="space-y-1 p-3 font-mono text-[12px] leading-relaxed">
         {started.length === 0 && (
           <li className="px-1 text-paper-muted">
-            <span className="text-mint">›</span> Esperando envío… <span className="caret">▍</span>
+            <span className="text-mint">›</span> {t.agentFeed.waiting} <span className="caret">▍</span>
           </li>
         )}
         {started.map((step) => (
-          <StepRow key={step.key} step={step} state={tracker[step.key]} ms={tracker.ms[step.key]} />
+          <StepRow key={step.key} step={step} state={tracker[step.key]} ms={tracker.ms[step.key]} detail={tracker.details?.[step.key]} />
         ))}
         {!isRunning && started.length > 0 && done === started.length && (
           <li className="block-in px-1 pt-1 text-mint">
-            <span>›</span> ✓ Pipeline completo — revelando piezas… <span className="caret">▍</span>
+            <span>›</span> {t.agentFeed.complete} <span className="caret">▍</span>
           </li>
         )}
       </ol>
@@ -77,7 +71,7 @@ export function AgentFeed({
   );
 }
 
-function StepRow({ step, state, ms }: { step: Step; state: StageTracker[StageKey]; ms: number }) {
+function StepRow({ step, state, ms, detail }: { step: Step; state: StageTracker[StageKey]; ms: number; detail?: string }) {
   return (
     <li
       className={clsx(
@@ -92,7 +86,7 @@ function StepRow({ step, state, ms }: { step: Step; state: StageTracker[StageKey
       {state === "done" && <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-mint" />}
       {state === "error" && <X className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger" />}
       <span className={clsx("min-w-0 flex-1 break-words", state === "error" ? "text-danger" : "text-paper-dim")}>
-        {step.label}
+        {detail ?? step.label}
         {state === "running" && <span className="caret"> ▍</span>}
       </span>
       {state === "done" && ms > 0 && (
@@ -102,7 +96,8 @@ function StepRow({ step, state, ms }: { step: Step; state: StageTracker[StageKey
   );
 }
 
-function LiveElapsed({ isRunning, total }: { isRunning: boolean; total?: number }) {
+function LiveElapsed({ isRunning, total, failed }: { isRunning: boolean; total?: number; failed: boolean }) {
+  const { t } = useI18n();
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     if (!isRunning) return;
@@ -112,7 +107,13 @@ function LiveElapsed({ isRunning, total }: { isRunning: boolean; total?: number 
   }, [isRunning]);
   return (
     <span className="shrink-0 font-mono text-[11px] text-paper-muted">
-      {isRunning ? `${elapsed} ms` : typeof total === "number" ? `${total} ms total` : "listo"}
+      {isRunning
+        ? `${elapsed} ms`
+        : failed
+          ? t.agentFeed.failedRetry
+          : typeof total === "number"
+            ? t.agentFeed.totalMs(total)
+            : t.agentFeed.stopped}
     </span>
   );
 }

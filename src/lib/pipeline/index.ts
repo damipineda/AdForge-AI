@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   campaignResultSchema,
+  type BriefFocus,
   type CampaignResult,
   type ImageAsset,
   type Locale,
@@ -10,12 +11,14 @@ import {
 import { runSam, type SamInput } from "./sam-segmentation";
 import { runMuseImage, type MuseImageInput } from "./muse-image";
 import { reviewCampaign } from "./visual-review";
+import { referenceSheet } from "./reference-sheet";
 import { reviewCreativePlan } from "./creative-plan";
 import { reviewCampaignCopy } from "./copy-review";
 import { runMuseSpark } from "./muse-spark";
 import { bufferToBase64 } from "./image";
 import { demoBundles } from "./demo-fixtures";
 import { getProvider, MODEL_LABELS } from "./provider";
+import type { BrandContext } from "./brand";
 
 export type { Provider } from "./provider";
 export { getProvider, toMetaTargeting } from "./provider";
@@ -31,6 +34,12 @@ export type PipelineInput = {
   merchant: { price: string | null; link: string | null };
   /** Agrupar varios productos en un mismo flyer (default true con >1 foto). */
   groupMode?: boolean;
+  /** Kit de marca del proyecto; ausente = el agente diseña libremente. */
+  brand?: BrandContext | null;
+  /** Intención mínima del usuario (manda sobre inferencias). */
+  userBrief?: string;
+  /** Enfoque comercial elegido (orienta categoría, tono y CTA). */
+  focus?: BriefFocus;
 };
 
 export type PipelineHandlers = {
@@ -52,8 +61,8 @@ export async function runPipeline(
   const startedAt = Date.now();
   const events: StageEvent[] = [];
 
-  const emit = (stage: StageEvent["stage"], status: StageEvent["status"], ms = 0) => {
-    const event: StageEvent = { stage, status, ms };
+  const emit = (stage: StageEvent["stage"], status: StageEvent["status"], ms = 0, detail?: string) => {
+    const event: StageEvent = { stage, status, ms, ...(detail ? { detail } : {}) };
     events.push(event);
     handlers.onStage(event);
   };
@@ -65,10 +74,7 @@ export async function runPipeline(
 
   const samStart = Date.now();
   emit("sam", "running");
-  const sams = [];
-  for (const img of images) {
-    sams.push(await runSam(img, provider));
-  }
+  const sams = await Promise.all(images.map((img) => runSam(img, provider)));
   const samMs = Date.now() - samStart;
   emit("sam", "done", samMs);
 
@@ -106,13 +112,22 @@ export async function runPipeline(
       groupMode,
       background,
       learnedRules,
+      brand: input.brand ?? null,
+      userBrief: input.userBrief,
+      focus: input.focus,
     },
     provider,
   );
+  emit("museSpark", "running", Date.now() - sparkStart, "Muse Spark: estrategia y copy listos; revisando coherencia editorial.");
   const editedCopy = await reviewCampaignCopy({ product: productDescription, locale: input.locale, claims: spark.allowedClaims, strategy: spark.creativeStrategy, feed: spark.feedVariants, story: spark.story, merchantLink: input.merchant.link, legalDisclaimer: spark.legalDisclaimer }, provider);
   spark.feedVariants = editedCopy.feed;
   spark.story = editedCopy.story;
-  const planned = await reviewCreativePlan({ product: productDescription, locale: input.locale, strategy: spark.creativeStrategy, feed: spark.feedVariants, story: spark.story }, provider);
+  // CTA ÚNICO (reaplicado: el copy-review puede reescribir CTAs por separado).
+  // El de V1 manda; V2 y story lo repiten idéntico.
+  spark.feedVariants[1].cta = spark.feedVariants[0].cta;
+  if (spark.story) spark.story.cta = spark.feedVariants[0].cta;
+  emit("museSpark", "running", Date.now() - sparkStart, "Muse Spark: afinando la dirección de arte antes de generar imágenes.");
+  const planned = await reviewCreativePlan({ designData, product: productDescription, locale: input.locale, strategy: spark.creativeStrategy, feed: spark.feedVariants, story: spark.story, userBrief: input.userBrief, focus: input.focus, brand: input.brand ?? null }, provider);
   spark.feedVariants = planned.feed;
   spark.story = planned.story;
   const sparkMs = Date.now() - sparkStart;
@@ -124,7 +139,7 @@ export async function runPipeline(
       locale: input.locale,
       productDescription,
       designData,
-      photo: { base64: bufferToBase64(images[0].bytes), mimeType: images[0].mimeType },
+      photo: await referenceSheet(images.map(img => ({ base64: bufferToBase64(img.bytes), mimeType: img.mimeType }))),
       feed: spark.feedVariants.map((v) => ({
         hook: v.hook,
         body: v.body,
@@ -142,23 +157,29 @@ export async function runPipeline(
       groupMode,
       background,
       learnedRules,
+      brand: input.brand ?? null,
     };
   const initialImage = await runMuseImage(imageInput, provider);
   const imageMs = Date.now() - imageStart;
   emit("museImage", "done", imageMs);
 
   const reviewStart = Date.now();
+  const reviewSignal = AbortSignal.timeout(240_000);
   emit("review", "running");
-  const quality = await reviewCampaign(imageInput, initialImage, provider);
+  const quality = await reviewCampaign(imageInput, initialImage, provider, undefined, {
+    signal: reviewSignal,
+    onProgress: detail => emit("review", "running", Date.now() - reviewStart, detail),
+  });
   const captionFeedback = quality.feedReviews.flatMap((review) => review.issues.filter((issue) => /^DESCRIPCI[ÓO]N:/i.test(issue.description)).map((issue) => `${issue.description} ${issue.suggestion}`));
   let finalCopyReview = editedCopy.copyReview;
-  if (provider === "meta" && captionFeedback.length > 0) {
+  if (provider === "meta" && captionFeedback.length > 0 && !reviewSignal.aborted) {
     const artworks = quality.image.feed.map((url) => {
       const match = url?.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/);
       return match ? { mimeType: match[1], base64: match[2] } : null;
     });
     if (artworks.every((artwork) => artwork !== null)) {
-      const corrected = await reviewCampaignCopy({ product: productDescription, locale: input.locale, claims: spark.allowedClaims, strategy: spark.creativeStrategy, feed: spark.feedVariants, story: spark.story, merchantLink: input.merchant.link, legalDisclaimer: spark.legalDisclaimer, artworks: artworks as Array<{ mimeType: string; base64: string }>, feedback: captionFeedback, captionsOnly: true }, provider);
+      emit("review", "running", Date.now() - reviewStart, "Ajustando solo las descripciones con observaciones; las imágenes se conservan.");
+      const corrected = await reviewCampaignCopy({ product: productDescription, locale: input.locale, claims: spark.allowedClaims, strategy: spark.creativeStrategy, feed: spark.feedVariants, story: spark.story, merchantLink: input.merchant.link, legalDisclaimer: spark.legalDisclaimer, artworks: artworks as Array<{ mimeType: string; base64: string }>, feedback: captionFeedback, captionsOnly: true, signal: reviewSignal }, provider);
       spark.feedVariants = corrected.feed;
       finalCopyReview = corrected.copyReview;
     }
@@ -178,6 +199,7 @@ export async function runPipeline(
   ];
 
   const result: CampaignResult = {
+    refinements: [],
     mode: provider,
     model: provider === "demo" ? null : MODEL_LABELS[provider],
     skuId: provider === "demo" ? demoBundles[input.locale].skuId : liveSkuId(combinedBytes(images.map((i) => i.bytes))),

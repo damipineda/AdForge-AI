@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Camera, Check, Copy, Users } from "lucide-react";
 import type { AudienceSegment, CampaignResult } from "@/lib/schema/campaign";
 import type { CutoutMode } from "@/lib/flyer/photo";
+import { useI18n } from "@/lib/i18n";
 
 export function MetaAdsTab({
   result,
@@ -12,21 +13,22 @@ export function MetaAdsTab({
   previewUrl: string | null;
   cutoutMode: CutoutMode;
 }) {
+  const { t } = useI18n();
   if (!result) {
     return (
       <div className="hatch flex h-[360px] items-center justify-center rounded-lg border border-night-rule">
-        <p className="text-sm text-paper-muted">El copy de Meta Ads aparece acá.</p>
+        <p className="text-sm text-paper-muted">{t.metaAds.empty}</p>
       </div>
     );
   }
   return (
     <div className="space-y-5">
       <p className="text-xs leading-relaxed text-paper-dim">
-        El mismo asset 4:5 sirve para Instagram y Facebook: lo que cambia es el copy del post. Copiá cada versión a su red.
+        {t.metaAds.intro}
       </p>
       {result.legalDisclaimer && (
         <p className="rounded-lg border border-night-rule-strong bg-night px-3 py-2 text-xs leading-relaxed text-paper-muted">
-          Micro-línea legal aplicada al pie de los captions: {result.legalDisclaimer}
+          {t.metaAds.legalPrefix} {result.legalDisclaimer}
         </p>
       )}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -37,11 +39,11 @@ export function MetaAdsTab({
             </h3>
             <dl className="space-y-2 text-sm">
               <div>
-                <dt className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">Titular</dt>
+                <dt className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">{t.metaAds.headline}</dt>
                 <dd className="mt-0.5 text-paper">{v.hook}</dd>
               </div>
               <div>
-                <dt className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">Apoyo</dt>
+                <dt className="font-mono text-[10px] uppercase tracking-widest text-paper-muted">{t.metaAds.body}</dt>
                 <dd className="mt-0.5 leading-relaxed text-paper-dim">{v.body}</dd>
               </div>
               <div className="flex flex-wrap items-center gap-2">
@@ -60,7 +62,7 @@ export function MetaAdsTab({
       <section className="rounded-xl border border-night-rule bg-night-panel p-4">
         <h3 className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-widest text-paper-muted">
           <Users className="h-3.5 w-3.5 text-mint" />
-          Audiencias sugeridas (borrador para revisar)
+          {t.metaAds.audiencesTitle}
         </h3>
         <ul className="mt-3 space-y-3">
           {result.audiences.map((audience) => (
@@ -73,6 +75,7 @@ export function MetaAdsTab({
 }
 
 function CaptionBlock({ network, text }: { network: "instagram" | "facebook"; text: string }) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -80,7 +83,7 @@ function CaptionBlock({ network, text }: { network: "instagram" | "facebook"; te
       setCopied(true);
       setTimeout(() => setCopied(false), 1600);
     } catch {
-      /* portapapeles no disponible */
+      /* clipboard unavailable */
     }
   };
   return (
@@ -96,7 +99,7 @@ function CaptionBlock({ network, text }: { network: "instagram" | "facebook"; te
           className="inline-flex items-center gap-1 rounded border border-night-rule-strong px-2 py-1 font-mono text-[10px] uppercase tracking-widest text-paper-dim transition-colors hover:border-mint hover:text-mint"
         >
           {copied ? <Check className="h-3 w-3 text-mint" /> : <Copy className="h-3 w-3" />}
-          {copied ? "Copiado" : "Copiar"}
+          {copied ? t.metaAds.copied : t.metaAds.copy}
         </button>
       </div>
       <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed text-paper-dim">{text}</p>
@@ -105,15 +108,16 @@ function CaptionBlock({ network, text }: { network: "instagram" | "facebook"; te
 }
 
 function AudienceRow({ audience }: { audience: AudienceSegment }) {
+  const { t } = useI18n();
   return (
     <li className="rounded-lg border border-night-rule-strong bg-night p-3 text-sm">
       <p className="font-semibold text-paper">{audience.name}</p>
       <p className="mt-1 text-xs leading-relaxed text-paper-dim">
-        {audience.ageMin}–{audience.ageMax} años
+        {audience.ageMin}–{audience.ageMax} {t.metaAds.years}
         {audience.geo.length ? ` · ${audience.geo.join(", ")}` : ""}
       </p>
       <p className="mt-1 text-xs leading-relaxed text-paper-muted">
-        Intereses: {audience.interests.join(", ")}
+        {t.metaAds.interests} {audience.interests.join(", ")}
       </p>
     </li>
   );

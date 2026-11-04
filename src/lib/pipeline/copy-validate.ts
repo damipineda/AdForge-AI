@@ -32,6 +32,10 @@ const LEXICON: Replacement[] = [
   { pattern: /\bcon rótulo sin gluten\b/gi, fix: "sin gluten", label: "burocratese" },
   { pattern: /\brótulo sin gluten\b/gi, fix: "sin gluten", label: "burocratese" },
   { pattern: /\brótulo\b/gi, fix: "", label: "burocratese" },
+  { pattern: /\s+en\s+(?:la\s+)?etiqueta\b/gi, fix: "", label: "burocratese" },
+  { pattern: /\s+según\s+(?:la\s+)?etiqueta\b/gi, fix: "", label: "burocratese" },
+  { pattern: /\s+en\s+(?:el\s+)?envase\b/gi, fix: "", label: "burocratese" },
+  { pattern: /\s+visibles?\s+en\s+(?:la\s+)?foto\b/gi, fix: "", label: "burocratese" },
   { pattern: /\s+declarados?\b/gi, fix: "", label: "burocratese" },
   { pattern: /\btené stock\b/gi, fix: "tené siempre", label: "jerga" },
   { pattern: /\bstock práctico\b/gi, fix: "reserva práctica", label: "jerga" },
@@ -58,6 +62,7 @@ const REGISTER: Replacement[] = [
 ];
 
 function preserveCase(match: string, fix: string): string {
+  if (!fix) return "";
   if (match[0] === match[0].toUpperCase() && match[0] !== match[0].toLowerCase()) {
     return fix[0].toUpperCase() + fix.slice(1);
   }

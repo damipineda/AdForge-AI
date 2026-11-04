@@ -8,26 +8,40 @@ import {
   toShopifyProduct,
   type CampaignResult,
 } from "@/lib/schema/campaign";
+import { useI18n } from "@/lib/i18n";
 
 type View = "shopify" | "meta" | "raw";
 
 export function StorefrontJsonTab({ result }: { result: CampaignResult | null }) {
+  const { t } = useI18n();
   const [view, setView] = useState<View>("shopify");
 
   if (!result) {
     return (
       <div className="hatch flex h-[360px] items-center justify-center rounded-lg border border-night-rule">
-        <p className="text-sm text-paper-muted">El JSON aparece acá cuando termina el pipeline.</p>
+        <p className="text-sm text-paper-muted">{t.storefrontJson.empty}</p>
       </div>
     );
   }
+
+  const summaryFn = (p: string | null) =>
+    p ? t.storefrontJson.generatedSummary(Math.round(p.length / 1024)) : null;
 
   const payload =
     view === "shopify"
       ? JSON.stringify(toShopifyProduct(result), null, 2)
       : view === "meta"
         ? toMetaCatalogFeed(result)
-        : JSON.stringify(sanitizePosters(result), null, 2);
+        : JSON.stringify(
+            {
+              ...result,
+              feedImages: result.feedImages.map(summaryFn),
+              storyImage: summaryFn(result.storyImage),
+              carouselImages: result.carouselImages?.map(summaryFn) ?? null,
+            },
+            null,
+            2,
+          );
 
   return (
     <div className="space-y-3">
@@ -114,17 +128,4 @@ function downloadFile(name: string, contents: string, mime: string) {
   a.click();
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-/** Reemplaza los data URL de las piezas por un resumen para que la vista
- * "Campaign raw" no tenga que renderizar megabytes de base64 en el <pre>. */
-function sanitizePosters(result: CampaignResult) {
-  const summary = (p: string | null) =>
-    p ? `«pieza generada · ~${Math.round(p.length / 1024)} KB de base64»` : null;
-  return {
-    ...result,
-    feedImages: result.feedImages.map(summary),
-    storyImage: summary(result.storyImage),
-    carouselImages: result.carouselImages?.map(summary) ?? null,
-  };
 }

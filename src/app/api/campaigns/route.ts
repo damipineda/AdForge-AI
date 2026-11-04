@@ -7,6 +7,7 @@ import {
   listCampaignAssets,
   projectExists,
 } from "@/lib/store/db";
+import { briefFocusSchema, briefTextSchema } from "@/lib/schema/campaign";
 import { saveDataUrl } from "@/lib/store/files";
 
 const flyerSchema = z.strictObject({
@@ -24,6 +25,9 @@ const bodySchema = z.strictObject({
   resultJson: z.string().min(1).nullable().default(null),
   /** Ids de Asset fuente (type=source) a enlazar con la campaña. */
   sourceAssetIds: z.array(z.string()).max(8).default([]),
+  /** Intención mínima del usuario + enfoque elegido en la barra. */
+  brief: briefTextSchema.default(""),
+  focus: briefFocusSchema.optional(),
   flyers: z.array(flyerSchema).max(8).default([]),
 });
 
@@ -54,7 +58,7 @@ export async function POST(request: Request) {
     }
   }
 
-  const campaign = createCampaign({ projectId, prompt, status, resultJson: null });
+  const campaign = createCampaign({ projectId, prompt, status, resultJson: null, brief: parsed.data.brief, focus: parsed.data.focus });
 
   // 1) Flyers generados → archivos + filas Asset.
   const rewritten: Record<string, string> = {};

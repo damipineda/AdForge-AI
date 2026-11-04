@@ -1,9 +1,10 @@
 "use client";
 
-import type { CampaignResult } from "@/lib/schema/campaign";
+import type { BriefFocus, CampaignResult } from "@/lib/schema/campaign";
+import type { PiecePlacement } from "@/lib/pipeline/refine-piece";
 
 export type Project = { id: string; name: string; createdAt: number; campaigns: number; assets: number };
-export type CampaignSummary = { id: string; projectId: string; prompt: string; status: string; createdAt: number };
+export type CampaignSummary = { id: string; projectId: string; prompt: string; status: string; createdAt: number; brief: string; focus: string };
 export type Asset = {
   id: string;
   campaignId: string | null;
@@ -41,6 +42,26 @@ export type SkillRule = {
   promotedAt: number | null;
   createdAt: number;
   updatedAt: number;
+};
+export type BrandKit = {
+  id: string;
+  projectId: string;
+  name: string;
+  primaryColor: string;
+  secondaryColor: string;
+  accentColor: string;
+  logoAssetId: string | null;
+  logoPosition: "auto" | "left" | "right";
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type ApiKeySettings = {
+  configured: boolean;
+  maskedKey: string | null;
+  source: "ui" | "env" | "none";
+  provider: "demo" | "meta";
+  verified?: boolean;
 };
 
 export function assetMeta(asset: Asset): { filename?: string; mime?: string; slot?: string } {
@@ -80,6 +101,8 @@ export const store = {
     request<{ campaigns: CampaignSummary[] }>(`/api/projects/${projectId}/campaigns`),
   getCampaign: (id: string) => request<SavedCampaign>(`/api/campaigns/${id}`),
   deleteCampaign: (id: string) => request<{ ok: boolean }>(`/api/campaigns/${id}`, { method: "DELETE" }),
+  refinePiece: (id: string, placement: PiecePlacement, instruction: string, mode?: "refine" | "regenerate") =>
+    request<{ result: CampaignResult; assets: Asset[]; notice?: string }>(`/api/campaigns/${id}/refine`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ placement, instruction, mode }) }),
   logExport: (campaignId: string) =>
     request<{ marked: number }>(`/api/campaigns/${campaignId}`, { method: "POST" }),
 
@@ -95,11 +118,30 @@ export const store = {
     ),
 
   listAssets: (projectId: string) => request<{ assets: Asset[] }>(`/api/projects/${projectId}/assets`),
-  uploadSources: (projectId: string, files: File[]) => {
+  uploadSources: (projectId: string, files: File[], type: "source" | "logo" = "source") => {
     const form = new FormData();
+    form.append("type", type);
     files.forEach((f) => form.append("file", f, f.name));
     return request<{ assets: Asset[] }>(`/api/projects/${projectId}/assets`, { method: "POST", body: form });
   },
+
+  getBrandKit: (projectId: string) =>
+    request<{ kit: BrandKit | null; logo: Asset | null }>(`/api/projects/${projectId}/brand-kit`),
+  saveBrandKit: (projectId: string, kit: Omit<BrandKit, "id" | "projectId" | "createdAt" | "updatedAt">) =>
+    request<{ kit: BrandKit }>(`/api/projects/${projectId}/brand-kit`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(kit),
+    }),
+
+  getSettings: () => request<ApiKeySettings>("/api/settings"),
+  saveApiKey: (apiKey: string) =>
+    request<ApiKeySettings>("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey }),
+    }),
+  clearApiKey: () => request<ApiKeySettings>("/api/settings", { method: "DELETE" }),
 
   saveCampaign: (input: {
     projectId: string;
@@ -107,6 +149,8 @@ export const store = {
     status: "done" | "error";
     result: CampaignResult | null;
     sourceAssetIds: string[];
+    brief?: string;
+    focus?: BriefFocus | null;
   }) => {
     const flyers: Array<{ slot: string; type: "feed" | "story" | "carousel"; dataUrl: string; filename: string }> = [];
     const result = input.result;
@@ -134,6 +178,8 @@ export const store = {
         status: input.status,
         resultJson: result ? JSON.stringify(result) : null,
         sourceAssetIds: input.sourceAssetIds,
+        brief: input.brief ?? "",
+        focus: input.focus ?? undefined,
         flyers,
       }),
     });
