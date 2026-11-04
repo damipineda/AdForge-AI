@@ -8,6 +8,16 @@
 
 AdForge AI helps small businesses turn product photographs into social-media campaign drafts: creative directions, image assets, ad copy, audience ideas, and catalog exports. It is a project for the [Meta Global AI Developer Hackathon](https://dev.meta.ai/events/global-hackathon), built around Meta Model API. Project owner: [damipineda](https://github.com/damipineda).
 
+## Watch the hackathon demo
+
+**[▶ Watch AdForge AI — Hackathon Final on Vimeo (2:36)](https://vimeo.com/1243422580)**
+
+[![Play the AdForge AI hackathon demo on Vimeo](public/demo/hackathon-demo-preview.jpg)](https://vimeo.com/1243422580)
+
+The English-captioned walkthrough shows product input, campaign planning, feed and story artwork, visual auditing and refinement controls. The closing screens identify the original hackathon contributions, Meta AI's development assistance, and the MIT-licensed source. The video also clarifies that product analysis uses Muse Spark vision; the legacy SAM label in the recording does not indicate an integrated segmentation model.
+
+Click the preview to watch on Vimeo.
+
 > **Prototype, not an autopublishing service.** AI-generated images and copy need human review for accuracy, rights, privacy and platform requirements. AdForge does not post advertisements or create campaigns in Meta Ads Manager.
 
 ## The problem
