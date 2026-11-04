@@ -10,11 +10,11 @@ AdForge AI helps small businesses turn product photographs into social-media cam
 
 ## Watch the hackathon demo
 
-**[▶ Watch AdForge AI — Hackathon Final on Vimeo (2:36)](https://vimeo.com/1243422580)**
+**[▶ Watch AdForge AI — Meta Hackathon Demo on Vimeo (2:32)](https://vimeo.com/1243468446)**
 
-[![Play the AdForge AI hackathon demo on Vimeo](public/demo/hackathon-demo-preview.jpg)](https://vimeo.com/1243422580)
+[![Play the AdForge AI hackathon demo on Vimeo](public/demo/hackathon-demo-preview.jpg)](https://vimeo.com/1243468446)
 
-The English-captioned walkthrough shows product input, campaign planning, feed and story artwork, visual auditing and refinement controls. The closing screens identify the original hackathon contributions, Meta AI's development assistance, and the MIT-licensed source. The video also clarifies that product analysis uses Muse Spark vision; the legacy SAM label in the recording does not indicate an integrated segmentation model.
+The English-captioned walkthrough shows product input, campaign planning, feed and story artwork, visual auditing and selective refinement. The closing screen identifies the original hackathon contributions: the campaign pipeline, visual audit, refinement workflow and campaign history. Runtime generation uses Muse Spark and Muse Image, and the source is released under the MIT License.
 
 Click the preview to watch on Vimeo.
 
