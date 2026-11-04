@@ -34,4 +34,6 @@ Live calls have variable latency, token usage and image costs. The initial visua
 
 ## Hackathon submission
 
-The event describes Muse Code as one of the available development tools. This repository does not provide independently verifiable records of which development tool produced individual changes; do not infer those details from commit authorship. Follow the participant portal and official rules for any required tool-use disclosure, demo, and submission materials.
+The project owner reports substantial use of Meta AI during development: understanding Meta integration, designing and iterating on the campaign workflow, implementing and correcting generation and audit behavior, and working through local database persistence and image storage. This development assistance is distinct from the application's runtime use of Muse Spark and Muse Image described above. It is not a claim that Meta AI independently authored every change or that a particular coding model produced every commit.
+
+The submission should identify the original application work built during the event and distinguish it from the Create Next App scaffold. Older screen recordings may show the legacy “SAM 3.1” stage label: the implemented product analysis uses Muse Spark vision, not SAM segmentation masks. Follow the participant portal and official rules for required disclosures and submission materials.

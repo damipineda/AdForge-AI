@@ -131,6 +131,12 @@ The AdForge implementation is recorded in commits dated 28 October–4 November 
 
 The demo should highlight these implemented application features and distinguish live Muse generation from the offline demo fixtures. The supplied participant guide requires a publicly accessible repository, an accessible three-minute demo video, identification of all contributors, and submission through the CV platform.
 
+### Meta AI contribution
+
+The project owner used Meta AI extensively to help understand the Meta integration and develop, debug and refine the campaign workflow, visual auditing, local database persistence and image storage. In the running application, Muse Spark analyzes products, plans campaigns, writes copy and reviews results; Muse Image generates and refines the artwork. Development assistance and runtime inference are separate roles. See [the integration notes](docs/muse-code-usage.md#hackathon-submission) for attribution.
+
+Older demo footage may display a legacy “SAM 3.1” stage label. The implemented analysis uses **Muse Spark vision**; SAM segmentation masks are not integrated.
+
 ## Español
 
 AdForge AI transforma fotos de productos en borradores de campañas para redes: dos piezas de feed, historia y carrusel opcional, con copy, audiencias sugeridas y exportaciones de catálogo. Usa Muse Spark para analizar, redactar y revisar, y Muse Image para generar las piezas. La revisión humana sigue siendo necesaria y los datos sensibles deben ocultarse antes de subir la foto.
