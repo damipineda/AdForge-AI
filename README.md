@@ -10,13 +10,13 @@ AdForge AI helps small businesses turn product photographs into social-media cam
 
 ## Watch the hackathon demo
 
-**[▶ Watch AdForge AI — Meta Hackathon Demo on Vimeo (2:32)](https://vimeo.com/1243468446)**
+**[▶ Watch AdForge AI — Meta Hackathon Demo on YouTube (2:32)](https://youtu.be/R73af6gwxJA)**
 
-[![Play the AdForge AI hackathon demo on Vimeo](public/demo/hackathon-demo-preview.jpg)](https://vimeo.com/1243468446)
+[![Play the AdForge AI hackathon demo on YouTube](public/demo/hackathon-demo-preview.jpg)](https://youtu.be/R73af6gwxJA)
 
 The English-captioned walkthrough shows product input, campaign planning, feed and story artwork, visual auditing and selective refinement. The closing screen identifies the original hackathon contributions: the campaign pipeline, visual audit, refinement workflow and campaign history. Runtime generation uses Muse Spark and Muse Image, and the source is released under the MIT License.
 
-Click the preview to watch on Vimeo.
+Click the preview to watch on YouTube.
 
 > **Prototype, not an autopublishing service.** AI-generated images and copy need human review for accuracy, rights, privacy and platform requirements. AdForge does not post advertisements or create campaigns in Meta Ads Manager.
 
